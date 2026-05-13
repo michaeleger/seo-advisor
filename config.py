@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-GSC_CREDENTIALS_FILE = os.getenv("GSC_CREDENTIALS_FILE", "credentials.json")
+GSC_CREDENTIALS_FILE = os.getenv("GSC_CREDENTIALS_FILE", "client_secret.json")
 GSC_SITE_URL = os.getenv("GSC_SITE_URL", "https://eagertobehealthy.com/")
 WP_SITE_URL = os.getenv("WP_SITE_URL", "https://eagertobehealthy.com")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")

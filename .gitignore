@@ -1,0 +1,6 @@
+.env
+client_secret.json
+token.json
+seo_report_*.html
+__pycache__/
+*.pyc
