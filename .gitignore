@@ -1,6 +1,20 @@
-.env
-client_secret.json
-token.json
-seo_report_*.html
+# Python
 __pycache__/
 *.pyc
+*.pyo
+.venv/
+venv/
+
+# Auth & secrets
+credentials.json
+.oauth_state
+*.bak
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
