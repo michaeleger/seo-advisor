@@ -25,6 +25,8 @@ log = logging.getLogger(__name__)
 
 
 def main() -> None:
+    no_cooldown = "--no-cooldown" in sys.argv
+
     db.init_db()
     os.makedirs(config.REPORTS_DIR, exist_ok=True)
 
@@ -32,8 +34,12 @@ def main() -> None:
     page_metrics = gsc.get_page_metrics()
     log.info("  %d pages found in Search Console.", len(page_metrics))
 
-    excluded = db.cooldown_urls(page_metrics, config.COOLDOWN_DAYS)
-    log.info("  %d page(s) skipped (within %d-day cooldown).", len(excluded), config.COOLDOWN_DAYS)
+    if no_cooldown:
+        excluded: set[str] = set()
+        log.info("  Cooldown disabled (--no-cooldown).")
+    else:
+        excluded = db.cooldown_urls(page_metrics, config.COOLDOWN_DAYS)
+        log.info("  %d page(s) skipped (within %d-day cooldown).", len(excluded), config.COOLDOWN_DAYS)
 
     log.info("Identifying worst-performing posts …")
     low_performers = analyzer.identify_low_performers(page_metrics, excluded_urls=excluded)
@@ -56,36 +62,43 @@ def main() -> None:
         url = metrics["page"]
         log.info("[%d/%d] %s", i, len(low_performers), url)
 
-        post = wp_client.get_post_content(url)
-        if not post:
-            log.warning("  Could not fetch post content — skipping.")
-            continue
+        try:
+            post = wp_client.get_post_content(url)
+            if not post:
+                log.warning("  Could not fetch post content — skipping.")
+                continue
 
-        log.info("  Title: %s", post["title"])
+            log.info("  Title: %s", post["title"])
 
-        log.info("  Fetching top queries …")
-        queries = gsc.get_page_queries(url)
-        log.info("  %d queries found.", len(queries))
+            log.info("  Fetching top queries …")
+            queries = gsc.get_page_queries(url)
+            log.info("  %d queries found.", len(queries))
 
-        prev_state = db.get_page_state(url)
-        prev_metrics = prev_state["last_metrics"] if prev_state else None
-        if prev_metrics:
-            log.info("  Previous analysis: %s (delta will be shown).", prev_state["last_analyzed"])
+            prev_state = db.get_page_state(url)
+            prev_metrics = prev_state["last_metrics"] if prev_state else None
+            if prev_metrics:
+                log.info("  Previous analysis: %s (delta will be shown).", prev_state["last_analyzed"])
 
-        log.info("  Running SEO analysis …")
-        analysis = seo_advisor.analyze_post(metrics, queries, post)
-        if analysis:
-            log.info("  ✓ Analysis complete.")
-        else:
-            log.warning("  ✗ Analysis failed.")
+            log.info("  Running SEO analysis …")
+            analysis = seo_advisor.analyze_post(metrics, queries, post)
+            if analysis:
+                log.info("  ✓ Analysis complete.")
+            else:
+                log.warning("  ✗ Analysis failed — post will appear in report without AI suggestions.")
 
-        results.append({
-            "metrics": metrics,
-            "post": post,
-            "analysis": analysis,
-            "prev_metrics": prev_metrics,
-        })
-        db.save_page_state(url, metrics, output_file)
+            results.append({
+                "metrics": metrics,
+                "post": post,
+                "analysis": analysis,
+                "prev_metrics": prev_metrics,
+            })
+            db.save_page_state(url, metrics, output_file)
+
+        except RuntimeError:
+            # Re-raise config errors (e.g. missing API key) — no point continuing.
+            raise
+        except Exception as exc:
+            log.error("  Unexpected error processing %s: %s — skipping post.", url, exc)
 
     if not results:
         log.error("No results to report. Check that your WordPress posts are accessible.")

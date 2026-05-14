@@ -1,7 +1,7 @@
 import os
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)
 
 GSC_CREDENTIALS_FILE = os.getenv("GSC_CREDENTIALS_FILE", "client_secret.json")
 GSC_SITE_URL = os.getenv("GSC_SITE_URL", "https://eagertobehealthy.com/")

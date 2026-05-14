@@ -19,9 +19,12 @@ You will be given:
 Your response MUST be valid JSON matching this exact structure — no markdown, no extra text:
 {
   "summary": "2-3 sentence diagnosis of why this post is underperforming and the biggest opportunity",
+  "is_evergreen": true,
+  "evergreen_rationale": "one sentence explaining why this topic is or isn't evergreen",
   "target_keywords": [
-    {"keyword": "...", "rationale": "why this keyword fits and has opportunity"}
+    {"keyword": "...", "rationale": "why this keyword fits and has opportunity", "intent": "informational|navigational|transactional|commercial"}
   ],
+  "meta_description": "A compelling 150-160 character meta description that includes the primary keyword",
   "title_suggestions": [
     {"title": "...", "rationale": "why this title would improve CTR or rankings"}
   ],
@@ -41,7 +44,13 @@ Be specific — name the actual phrases, headings, and sections. Never give gene
 def _get_client() -> anthropic.Anthropic:
     global _client
     if _client is None:
-        _client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+        api_key = config.ANTHROPIC_API_KEY
+        if not api_key:
+            raise RuntimeError(
+                "ANTHROPIC_API_KEY is not set. Add it to your .env file "
+                "or export it as an environment variable."
+            )
+        _client = anthropic.Anthropic(api_key=api_key)
     return _client
 
 
@@ -88,7 +97,7 @@ POST CONTENT:
     try:
         response = _get_client().messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=2048,
+            max_tokens=4096,
             system=[
                 {
                     "type": "text",
@@ -99,10 +108,18 @@ POST CONTENT:
             messages=[{"role": "user", "content": prompt}],
         )
         raw = response.content[0].text.strip()
-        return json.loads(raw)
+        # Strip markdown code fences if Claude wraps the JSON
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        return json.loads(raw.strip())
     except json.JSONDecodeError as exc:
         print(f"[seo_advisor] JSON parse error for {post['url']}: {exc}")
         return None
+    except RuntimeError as exc:
+        print(f"[seo_advisor] Configuration error: {exc}")
+        raise
     except Exception as exc:
         print(f"[seo_advisor] Error analyzing {post['url']}: {exc}")
         return None

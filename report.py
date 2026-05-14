@@ -22,7 +22,8 @@ def _metric_pill(label: str, value: str, warn: bool = False, delta: str = "") ->
     return (
         f'<div class="pill">'
         f'<span class="pill-label">{label}</span>'
-        f'<span class="pill-value" style="color:{color}">{value}{delta}</span>'
+        f'<span class="pill-value" style="color:{color}">{value}</span>'
+        f'<span class="pill-delta">{delta}</span>'
         f"</div>"
     )
 
@@ -32,7 +33,6 @@ def _reason_tags(reasons: list[str]) -> str:
 
 
 def _delta_span(new_val: float, old_val: float | None, fmt: str = "+.0f", invert: bool = False) -> str:
-    """Render a delta badge. invert=True when lower is better (e.g. position)."""
     if old_val is None:
         return ""
     diff = new_val - old_val
@@ -44,29 +44,99 @@ def _delta_span(new_val: float, old_val: float | None, fmt: str = "+.0f", invert
     return f'<span style="color:{color};font-size:.8em;margin-left:.3em">({sign}{diff:{fmt.lstrip("+")}})</span>'
 
 
-def _keyword_rows(keywords: list[dict]) -> str:
-    rows = "".join(
-        f"<tr><td><code>{k['keyword']}</code></td><td>{k['rationale']}</td></tr>"
-        for k in keywords
-    )
-    return f"<table><thead><tr><th>Keyword</th><th>Rationale</th></tr></thead><tbody>{rows}</tbody></table>"
+def _keyword_opportunities_section(analysis: dict) -> str:
+    keywords = analysis.get("target_keywords", [])
+    if not keywords:
+        return ""
+
+    intent_colors = {
+        "informational": "#3498db",
+        "navigational": "#9b59b6",
+        "transactional": "#27ae60",
+        "commercial": "#e67e22",
+    }
+
+    rows = ""
+    for k in keywords:
+        intent = k.get("intent", "informational").lower()
+        color = intent_colors.get(intent, "#888")
+        intent_badge = f'<span class="badge" style="background:{color};font-size:.65rem">{intent}</span>'
+        rows += (
+            f"<tr>"
+            f'<td><code class="kw">{k["keyword"]}</code> {intent_badge}</td>'
+            f"<td>{k['rationale']}</td>"
+            f"</tr>"
+        )
+
+    meta_desc = analysis.get("meta_description", "")
+    meta_row = ""
+    if meta_desc:
+        char_count = len(meta_desc)
+        color = "#27ae60" if 140 <= char_count <= 160 else "#e67e22"
+        meta_row = f"""
+    <div class="meta-desc-box">
+      <div class="section-label">Suggested Meta Description
+        <span style="color:{color};font-size:.8rem;margin-left:.5rem">({char_count} chars)</span>
+      </div>
+      <p class="meta-desc-text">{meta_desc}</p>
+    </div>"""
+
+    evergreen = analysis.get("is_evergreen")
+    evergreen_html = ""
+    if evergreen is not None:
+        icon = "🌿" if evergreen else "📅"
+        label = "Evergreen content" if evergreen else "Time-sensitive content"
+        rationale = analysis.get("evergreen_rationale", "")
+        ev_color = "#27ae60" if evergreen else "#e67e22"
+        rationale_html = f' <span class="ev-note">— {rationale}</span>' if rationale else ""
+        evergreen_html = (
+            f'<div class="evergreen-tag" style="border-color:{ev_color};color:{ev_color}">'
+            f'{icon} {label}{rationale_html}'
+            f'</div>'
+        )
+
+    return f"""
+    <div class="section-block kw-section">
+      <h4 class="section-heading">Keyword Opportunities</h4>
+      {evergreen_html}
+      <table>
+        <thead><tr><th>Keyword</th><th>Why it fits</th></tr></thead>
+        <tbody>{rows}</tbody>
+      </table>
+      {meta_row}
+    </div>"""
 
 
-def _title_list(titles: list[dict]) -> str:
-    items = "".join(
-        f"<li><strong>{t['title']}</strong><br><small>{t['rationale']}</small></li>"
-        for t in titles
-    )
-    return f"<ol>{items}</ol>"
-
-
-def _phrase_rows(phrases: list[dict]) -> str:
+def _phrases_section(phrases: list[dict]) -> str:
+    if not phrases:
+        return ""
     rows = "".join(
         f'<tr><td><em>&ldquo;{p["phrase"]}&rdquo;</em></td>'
         f'<td><span class="placement">{p["placement"]}</span></td></tr>'
         for p in phrases
     )
-    return f"<table><thead><tr><th>Phrase</th><th>Placement</th></tr></thead><tbody>{rows}</tbody></table>"
+    return f"""
+    <div class="section-block">
+      <h4 class="section-heading">Phrases to Add</h4>
+      <table>
+        <thead><tr><th>Phrase</th><th>Where</th></tr></thead>
+        <tbody>{rows}</tbody>
+      </table>
+    </div>"""
+
+
+def _title_section(titles: list[dict]) -> str:
+    if not titles:
+        return ""
+    items = "".join(
+        f"<li><strong>{t['title']}</strong><br><small class='muted'>{t['rationale']}</small></li>"
+        for t in titles
+    )
+    return f"""
+    <div class="section-block">
+      <h4 class="section-heading">Title Suggestions</h4>
+      <ol class="title-list">{items}</ol>
+    </div>"""
 
 
 def _rankmath_panel(rankmath: dict) -> str:
@@ -83,7 +153,7 @@ def _rankmath_panel(rankmath: dict) -> str:
     md = rankmath.get("meta_description") or '<em style="color:#999">none</em>'
     return f"""
     <div class="rm-panel">
-      <h4>RankMath SEO Snapshot</h4>
+      <h4 class="section-heading" style="margin-top:0">RankMath Snapshot</h4>
       <div class="rm-grid">
         <div class="rm-row"><span class="rm-label">Focus Keyword</span><span class="rm-val"><code>{kw}</code></span></div>
         <div class="rm-row"><span class="rm-label">SEO Score</span><span class="rm-val">{score_html}</span></div>
@@ -93,7 +163,9 @@ def _rankmath_panel(rankmath: dict) -> str:
     </div>"""
 
 
-def _reco_list(recos: list[dict]) -> str:
+def _reco_section(recos: list[dict]) -> str:
+    if not recos:
+        return ""
     type_colors = {
         "rewrite_intro": "#8e44ad",
         "add_section": "#2980b9",
@@ -107,7 +179,11 @@ def _reco_list(recos: list[dict]) -> str:
         color = type_colors.get(r["type"], "#555")
         tag = _badge(r["type"].replace("_", " "), color)
         items.append(f"<li>{tag} {r['suggestion']}</li>")
-    return f"<ul>{''.join(items)}</ul>"
+    return f"""
+    <div class="section-block">
+      <h4 class="section-heading">Content Recommendations</h4>
+      <ul class="reco-list">{''.join(items)}</ul>
+    </div>"""
 
 
 def _post_section(idx: int, metrics: dict, post: dict, analysis: dict,
@@ -133,17 +209,13 @@ def _post_section(idx: int, metrics: dict, post: dict, analysis: dict,
         body = f"""
         {rm_panel}
         <div class="summary-box">{analysis['summary']}</div>
-        <h4>Target Keywords</h4>
-        {_keyword_rows(analysis.get('target_keywords', []))}
-        <h4>Suggested Titles</h4>
-        {_title_list(analysis.get('title_suggestions', []))}
-        <h4>Phrases to Add</h4>
-        {_phrase_rows(analysis.get('phrases_to_add', []))}
-        <h4>Content Recommendations</h4>
-        {_reco_list(analysis.get('content_recommendations', []))}
+        {_keyword_opportunities_section(analysis)}
+        {_title_section(analysis.get('title_suggestions', []))}
+        {_phrases_section(analysis.get('phrases_to_add', []))}
+        {_reco_section(analysis.get('content_recommendations', []))}
         """
     else:
-        body = f'{rm_panel}<p class="error">Analysis unavailable for this post.</p>'
+        body = f'{rm_panel}<p class="error">AI analysis unavailable for this post. Check your ANTHROPIC_API_KEY.</p>'
 
     reasons_html = _reason_tags(metrics.get("reasons", []))
 
@@ -157,7 +229,7 @@ def _post_section(idx: int, metrics: dict, post: dict, analysis: dict,
         <span class="reasons">{reasons_html}</span>
       </summary>
       <div class="metrics-row">{pills}</div>
-      {body}
+      <div class="post-body">{body}</div>
     </details>
     """
 
@@ -198,6 +270,10 @@ def build_report(results: list[dict], output_path: str = "seo_report.html") -> s
 
     analyzed = sum(1 for r in results if r["analysis"])
     site = results[0]["post"]["url"].split("/")[2] if results else "your site"
+    total_kw = sum(
+        len(r["analysis"].get("target_keywords", []))
+        for r in results if r["analysis"]
+    )
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -207,75 +283,234 @@ def build_report(results: list[dict], output_path: str = "seo_report.html") -> s
 <title>SEO Report — {site}</title>
 <style>
   :root {{
-    --bg: #f5f6fa; --card: #fff; --border: #e1e4e8;
-    --text: #24292e; --muted: #586069; --accent: #0366d6;
+    --bg: #f5f6fa;
+    --card: #fff;
+    --border: #e1e4e8;
+    --text: #24292e;
+    --muted: #586069;
+    --accent: #0366d6;
+    --radius: 8px;
   }}
   * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-  body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-          background: var(--bg); color: var(--text); line-height: 1.6; }}
-  header {{ background: #1a1a2e; color: #fff; padding: 2rem; }}
-  header h1 {{ font-size: 1.6rem; margin-bottom: .4rem; }}
-  header p {{ color: #aaa; font-size: .9rem; }}
-  .stats {{ display: flex; gap: 1.5rem; margin-top: 1rem; }}
-  .stat {{ background: rgba(255,255,255,.1); border-radius: 8px;
-           padding: .6rem 1.2rem; text-align: center; }}
-  .stat-val {{ font-size: 1.6rem; font-weight: 700; }}
-  .stat-label {{ font-size: .75rem; color: #ccc; }}
-  main {{ max-width: 960px; margin: 2rem auto; padding: 0 1rem; }}
-  h2 {{ font-size: 1.2rem; margin: 2rem 0 1rem; border-bottom: 2px solid var(--border);
-        padding-bottom: .5rem; }}
-  h4 {{ margin: 1.2rem 0 .5rem; color: var(--muted); font-size: .85rem;
-        text-transform: uppercase; letter-spacing: .05em; }}
-  table {{ width: 100%; border-collapse: collapse; font-size: .9rem; margin-bottom: 1rem; }}
-  th {{ background: var(--bg); text-align: left; padding: .5rem .75rem;
-        font-size: .8rem; color: var(--muted); border-bottom: 2px solid var(--border); }}
-  td {{ padding: .5rem .75rem; border-bottom: 1px solid var(--border); }}
+  body {{
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.65;
+    font-size: 15px;
+  }}
+
+  /* ── Header ── */
+  header {{ background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); color: #fff; padding: 2rem 2.5rem; }}
+  header h1 {{ font-size: 1.7rem; font-weight: 700; margin-bottom: .3rem; letter-spacing: -.02em; }}
+  header p {{ color: #9aa5b4; font-size: .9rem; }}
+  .stats {{ display: flex; gap: 1rem; margin-top: 1.2rem; flex-wrap: wrap; }}
+  .stat {{
+    background: rgba(255,255,255,.08);
+    border: 1px solid rgba(255,255,255,.12);
+    border-radius: var(--radius);
+    padding: .7rem 1.3rem;
+    text-align: center;
+    min-width: 110px;
+  }}
+  .stat-val {{ font-size: 1.8rem; font-weight: 700; line-height: 1; }}
+  .stat-label {{ font-size: .72rem; color: #9aa5b4; text-transform: uppercase; letter-spacing: .06em; margin-top: .2rem; }}
+
+  /* ── Main layout ── */
+  main {{ max-width: 1000px; margin: 2rem auto; padding: 0 1.25rem; }}
+
+  /* ── Section headings ── */
+  h2 {{
+    font-size: 1.05rem;
+    font-weight: 700;
+    margin: 2.5rem 0 1rem;
+    padding-bottom: .5rem;
+    border-bottom: 2px solid var(--border);
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    color: var(--muted);
+  }}
+  .section-heading {{
+    font-size: .75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .07em;
+    color: var(--muted);
+    margin: 1.4rem 0 .6rem;
+  }}
+
+  /* ── Overview table ── */
+  table {{ width: 100%; border-collapse: collapse; font-size: .88rem; margin-bottom: 1rem; }}
+  th {{
+    background: var(--bg);
+    text-align: left;
+    padding: .55rem .8rem;
+    font-size: .75rem;
+    color: var(--muted);
+    border-bottom: 2px solid var(--border);
+    text-transform: uppercase;
+    letter-spacing: .05em;
+  }}
+  td {{ padding: .55rem .8rem; border-bottom: 1px solid var(--border); vertical-align: top; }}
   td.warn {{ color: #e74c3c; font-weight: 600; }}
-  tr:hover td {{ background: #f9f9f9; }}
-  .post-card {{ background: var(--card); border: 1px solid var(--border);
-                border-radius: 8px; margin-bottom: 1rem;
-                box-shadow: 0 1px 3px rgba(0,0,0,.06); }}
-  .post-card summary {{ padding: 1rem 1.2rem; cursor: pointer; display: flex;
-                         align-items: center; gap: .75rem; list-style: none; }}
+  tr:hover td {{ background: #fafbfc; }}
+
+  /* ── Post cards ── */
+  .post-card {{
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-bottom: 1rem;
+    box-shadow: 0 1px 4px rgba(0,0,0,.05);
+    transition: box-shadow .15s;
+  }}
+  .post-card:hover {{ box-shadow: 0 3px 10px rgba(0,0,0,.09); }}
+  .post-card summary {{
+    padding: 1rem 1.25rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: .75rem;
+    list-style: none;
+    user-select: none;
+  }}
   .post-card summary::-webkit-details-marker {{ display: none; }}
-  .post-card summary::before {{ content: "▶"; font-size: .7rem; color: var(--muted);
-                                 transition: transform .2s; }}
+  .post-card summary::before {{
+    content: "▶";
+    font-size: .65rem;
+    color: var(--muted);
+    transition: transform .2s;
+    flex-shrink: 0;
+  }}
   .post-card[open] summary::before {{ transform: rotate(90deg); }}
-  .post-card > div, .post-card > p {{ padding: 0 1.2rem 1.2rem; }}
-  .post-num {{ background: #1a1a2e; color: #fff; border-radius: 4px;
-               padding: .2rem .5rem; font-size: .8rem; flex-shrink: 0; }}
-  .post-title {{ flex: 1; font-weight: 600; }}
+  .post-num {{
+    background: #1a1a2e;
+    color: #fff;
+    border-radius: 4px;
+    padding: .2rem .55rem;
+    font-size: .78rem;
+    font-weight: 700;
+    flex-shrink: 0;
+  }}
+  .post-title {{ flex: 1; font-weight: 600; font-size: .95rem; }}
   .post-title a {{ color: var(--text); text-decoration: none; }}
   .post-title a:hover {{ color: var(--accent); }}
-  .reasons {{ display: flex; gap: .4rem; flex-wrap: wrap; }}
-  .badge {{ font-size: .7rem; color: #fff; border-radius: 4px;
-             padding: .15rem .5rem; white-space: nowrap; }}
-  .metrics-row {{ display: flex; gap: .75rem; flex-wrap: wrap;
-                  padding: .75rem 1.2rem; background: var(--bg);
-                  border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }}
-  .pill {{ display: flex; flex-direction: column; align-items: center;
-           background: var(--card); border: 1px solid var(--border);
-           border-radius: 6px; padding: .4rem .8rem; min-width: 80px; }}
-  .pill-label {{ font-size: .7rem; color: var(--muted); }}
-  .pill-value {{ font-size: 1.1rem; font-weight: 700; }}
-  .summary-box {{ background: #fffbf0; border-left: 4px solid #f39c12;
-                  padding: .75rem 1rem; border-radius: 0 6px 6px 0;
-                  margin-bottom: 1rem; font-size: .95rem; }}
-  .placement {{ background: #eaf4fb; color: #2980b9; font-size: .75rem;
-                border-radius: 4px; padding: .15rem .5rem; }}
-  ol, ul {{ padding-left: 1.4rem; }}
-  li {{ margin-bottom: .6rem; }}
-  code {{ background: #f3f4f5; padding: .1rem .35rem; border-radius: 3px;
-          font-size: .9em; }}
-  small {{ color: var(--muted); }}
-  .error {{ color: #e74c3c; font-style: italic; padding: 1rem 0; }}
-  a {{ color: var(--accent); }}
-  .rm-panel {{ background: #f0f7ff; border: 1px solid #c8e0f7; border-radius: 6px;
-               padding: .75rem 1rem; margin-bottom: 1rem; }}
-  .rm-grid {{ display: flex; flex-direction: column; gap: .35rem; margin-top: .4rem; }}
+  .reasons {{ display: flex; gap: .35rem; flex-wrap: wrap; }}
+
+  /* ── Metrics pills ── */
+  .metrics-row {{
+    display: flex;
+    gap: .6rem;
+    flex-wrap: wrap;
+    padding: .75rem 1.25rem;
+    background: var(--bg);
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+  }}
+  .pill {{
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: .45rem .9rem;
+    min-width: 88px;
+  }}
+  .pill-label {{ font-size: .68rem; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }}
+  .pill-value {{ font-size: 1.15rem; font-weight: 700; line-height: 1.2; }}
+  .pill-delta {{ font-size: .72rem; color: var(--muted); min-height: 1em; }}
+
+  /* ── Post body ── */
+  .post-body {{ padding: 1rem 1.25rem 1.25rem; }}
+  .section-block {{ margin-bottom: 1.5rem; }}
+
+  /* ── Summary box ── */
+  .summary-box {{
+    background: #fffbf0;
+    border-left: 4px solid #f39c12;
+    padding: .85rem 1.1rem;
+    border-radius: 0 6px 6px 0;
+    margin-bottom: 1.2rem;
+    font-size: .95rem;
+    line-height: 1.7;
+  }}
+
+  /* ── Keyword opportunities ── */
+  .kw-section {{ background: #f8f9fe; border: 1px solid #dde4f7; border-radius: 6px; padding: .9rem 1.1rem; }}
+  code.kw {{ background: #e8edf8; color: #1a3a8f; padding: .1rem .4rem; border-radius: 3px; font-size: .88em; }}
+  .evergreen-tag {{
+    display: inline-flex;
+    align-items: center;
+    gap: .4rem;
+    border: 1px solid;
+    border-radius: 20px;
+    padding: .2rem .75rem;
+    font-size: .8rem;
+    font-weight: 600;
+    margin-bottom: .75rem;
+  }}
+  .ev-note {{ font-weight: 400; color: var(--muted); }}
+
+  /* ── Meta description box ── */
+  .meta-desc-box {{
+    margin-top: 1rem;
+    background: #fff;
+    border: 1px dashed #b0c4de;
+    border-radius: 6px;
+    padding: .75rem 1rem;
+  }}
+  .section-label {{ font-size: .72rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-bottom: .4rem; }}
+  .meta-desc-text {{ font-size: .9rem; color: var(--text); line-height: 1.6; }}
+
+  /* ── Title list ── */
+  .title-list {{ padding-left: 1.2rem; }}
+  .title-list li {{ margin-bottom: .9rem; }}
+  .title-list strong {{ font-size: .95rem; }}
+  .muted {{ color: var(--muted); font-size: .85rem; }}
+
+  /* ── Reco list ── */
+  .reco-list {{ list-style: none; padding: 0; }}
+  .reco-list li {{ margin-bottom: .7rem; display: flex; align-items: flex-start; gap: .5rem; line-height: 1.55; }}
+
+  /* ── Phrases table ── */
+  .placement {{
+    background: #eaf4fb;
+    color: #1a6fa8;
+    font-size: .72rem;
+    border-radius: 4px;
+    padding: .15rem .5rem;
+    white-space: nowrap;
+    font-weight: 600;
+  }}
+
+  /* ── RankMath panel ── */
+  .rm-panel {{
+    background: #f0f7ff;
+    border: 1px solid #c8e0f7;
+    border-radius: 6px;
+    padding: .75rem 1rem;
+    margin-bottom: 1.1rem;
+  }}
+  .rm-grid {{ display: flex; flex-direction: column; gap: .4rem; margin-top: .5rem; }}
   .rm-row {{ display: flex; gap: .75rem; font-size: .875rem; }}
-  .rm-label {{ color: var(--muted); min-width: 130px; flex-shrink: 0; }}
+  .rm-label {{ color: var(--muted); min-width: 130px; flex-shrink: 0; font-weight: 500; }}
   .rm-val {{ word-break: break-word; }}
+
+  /* ── Misc ── */
+  .badge {{
+    font-size: .68rem;
+    color: #fff;
+    border-radius: 4px;
+    padding: .15rem .5rem;
+    white-space: nowrap;
+    font-weight: 600;
+    flex-shrink: 0;
+  }}
+  code {{ background: #f3f4f5; padding: .1rem .35rem; border-radius: 3px; font-size: .88em; }}
+  a {{ color: var(--accent); }}
+  .error {{ color: #e74c3c; font-style: italic; padding: 1rem 0; }}
+  .hint {{ color: var(--muted); font-size: .85rem; margin-bottom: 1rem; }}
 </style>
 </head>
 <body>
@@ -290,6 +525,10 @@ def build_report(results: list[dict], output_path: str = "seo_report.html") -> s
     <div class="stat">
       <div class="stat-val">{analyzed}</div>
       <div class="stat-label">AI-Analyzed</div>
+    </div>
+    <div class="stat">
+      <div class="stat-val">{total_kw}</div>
+      <div class="stat-label">Keywords Found</div>
     </div>
     <div class="stat">
       <div class="stat-val">{sum(int(r['metrics']['impressions']) for r in results):,}</div>
@@ -314,9 +553,7 @@ def build_report(results: list[dict], output_path: str = "seo_report.html") -> s
   </table>
 
   <h2>Post-by-Post Analysis</h2>
-  <p style="color:var(--muted);font-size:.85rem;margin-bottom:1rem">
-    Click any post to expand the full SEO recommendations.
-  </p>
+  <p class="hint">Click any post to expand the full AI recommendations including keyword opportunities, title rewrites, and content improvements.</p>
   {post_sections}
 </main>
 </body>
