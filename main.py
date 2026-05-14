@@ -4,11 +4,13 @@ and produces a Claude-powered HTML report with keyword, title, and
 content recommendations.
 """
 import logging
+import os
 import sys
 from datetime import date
 
 import analyzer
 import config
+import db
 import gsc
 import report
 import seo_advisor
@@ -23,26 +25,37 @@ log = logging.getLogger(__name__)
 
 
 def main() -> None:
+    db.init_db()
+    os.makedirs(config.REPORTS_DIR, exist_ok=True)
+
     log.info("Fetching GSC page metrics for %s …", config.GSC_SITE_URL)
     page_metrics = gsc.get_page_metrics()
     log.info("  %d pages found in Search Console.", len(page_metrics))
 
-    log.info("Identifying low-performing posts …")
-    low_performers = analyzer.identify_low_performers(page_metrics)
+    excluded = db.cooldown_urls(page_metrics, config.COOLDOWN_DAYS)
+    log.info("  %d page(s) skipped (within %d-day cooldown).", len(excluded), config.COOLDOWN_DAYS)
+
+    log.info("Identifying worst-performing posts …")
+    low_performers = analyzer.identify_low_performers(page_metrics, excluded_urls=excluded)
 
     if not low_performers:
-        log.info("No low-performing posts found with current thresholds. "
-                 "Try lowering MIN_IMPRESSIONS or raising MAX_CTR in .env")
+        log.info(
+            "No eligible low-performing posts found. "
+            "All candidates may be in cooldown, or try adjusting thresholds in .env."
+        )
         sys.exit(0)
 
     log.info("Found %d post(s) to analyze (cap: %d).", len(low_performers), config.MAX_POSTS_TO_ANALYZE)
+
+    output_file = os.path.join(
+        config.REPORTS_DIR, f"seo_report_{date.today().isoformat()}.html"
+    )
 
     results = []
     for i, metrics in enumerate(low_performers, 1):
         url = metrics["page"]
         log.info("[%d/%d] %s", i, len(low_performers), url)
 
-        # Fetch WordPress content
         post = wp_client.get_post_content(url)
         if not post:
             log.warning("  Could not fetch post content — skipping.")
@@ -50,12 +63,15 @@ def main() -> None:
 
         log.info("  Title: %s", post["title"])
 
-        # Fetch per-page query data
         log.info("  Fetching top queries …")
         queries = gsc.get_page_queries(url)
         log.info("  %d queries found.", len(queries))
 
-        # Run Claude SEO analysis
+        prev_state = db.get_page_state(url)
+        prev_metrics = prev_state["last_metrics"] if prev_state else None
+        if prev_metrics:
+            log.info("  Previous analysis: %s (delta will be shown).", prev_state["last_analyzed"])
+
         log.info("  Running SEO analysis …")
         analysis = seo_advisor.analyze_post(metrics, queries, post)
         if analysis:
@@ -63,17 +79,21 @@ def main() -> None:
         else:
             log.warning("  ✗ Analysis failed.")
 
-        results.append({"metrics": metrics, "post": post, "analysis": analysis})
+        results.append({
+            "metrics": metrics,
+            "post": post,
+            "analysis": analysis,
+            "prev_metrics": prev_metrics,
+        })
+        db.save_page_state(url, metrics, output_file)
 
     if not results:
         log.error("No results to report. Check that your WordPress posts are accessible.")
         sys.exit(1)
 
-    output_file = f"seo_report_{date.today().isoformat()}.html"
     log.info("Building HTML report …")
     path = report.build_report(results, output_path=output_file)
     log.info("Done! Report saved to: %s", path)
-    log.info("Open it in your browser: file://%s/%s", __import__('os').getcwd(), path)
 
 
 if __name__ == "__main__":

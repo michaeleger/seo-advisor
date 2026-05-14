@@ -1,5 +1,6 @@
 """Generate a self-contained HTML SEO report."""
 from datetime import date
+from typing import Any
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -16,18 +17,31 @@ def _badge(text: str, color: str) -> str:
     return f'<span class="badge" style="background:{color}">{text}</span>'
 
 
-def _metric_pill(label: str, value: str, warn: bool = False) -> str:
+def _metric_pill(label: str, value: str, warn: bool = False, delta: str = "") -> str:
     color = "#e74c3c" if warn else "#2ecc71"
     return (
         f'<div class="pill">'
         f'<span class="pill-label">{label}</span>'
-        f'<span class="pill-value" style="color:{color}">{value}</span>'
+        f'<span class="pill-value" style="color:{color}">{value}{delta}</span>'
         f"</div>"
     )
 
 
 def _reason_tags(reasons: list[str]) -> str:
     return " ".join(_badge(r, "#e74c3c") for r in reasons)
+
+
+def _delta_span(new_val: float, old_val: float | None, fmt: str = "+.0f", invert: bool = False) -> str:
+    """Render a delta badge. invert=True when lower is better (e.g. position)."""
+    if old_val is None:
+        return ""
+    diff = new_val - old_val
+    if diff == 0:
+        return '<span style="color:#888;font-size:.8em"> (=)</span>'
+    good = (diff < 0) if invert else (diff > 0)
+    color = "#2ecc71" if good else "#e74c3c"
+    sign = "+" if diff > 0 else ""
+    return f'<span style="color:{color};font-size:.8em;margin-left:.3em">({sign}{diff:{fmt.lstrip("+")}})</span>'
 
 
 def _keyword_rows(keywords: list[dict]) -> str:
@@ -96,15 +110,21 @@ def _reco_list(recos: list[dict]) -> str:
     return f"<ul>{''.join(items)}</ul>"
 
 
-def _post_section(idx: int, metrics: dict, post: dict, analysis: dict) -> str:
+def _post_section(idx: int, metrics: dict, post: dict, analysis: dict,
+                  prev_metrics: dict | None = None) -> str:
     ctr_warn = metrics["ctr"] < 0.05
     pos_warn = metrics["position"] > 20
+    pm = prev_metrics
 
     pills = (
-        _metric_pill("Clicks", str(int(metrics["clicks"])))
-        + _metric_pill("Impressions", str(int(metrics["impressions"])))
-        + _metric_pill("CTR", _pct(metrics["ctr"]), warn=ctr_warn)
-        + _metric_pill("Avg Position", _pos(metrics["position"]), warn=pos_warn)
+        _metric_pill("Clicks", str(int(metrics["clicks"])),
+                     delta=_delta_span(metrics["clicks"], pm["clicks"] if pm else None, fmt="+.0f"))
+        + _metric_pill("Impressions", str(int(metrics["impressions"])),
+                       delta=_delta_span(metrics["impressions"], pm["impressions"] if pm else None, fmt="+.0f"))
+        + _metric_pill("CTR", _pct(metrics["ctr"]), warn=ctr_warn,
+                       delta=_delta_span(metrics["ctr"] * 100, pm["ctr"] * 100 if pm else None, fmt="+.1f"))
+        + _metric_pill("Avg Position", _pos(metrics["position"]), warn=pos_warn,
+                       delta=_delta_span(metrics["position"], pm["position"] if pm else None, fmt="+.1f", invert=True))
     )
 
     rm_panel = _rankmath_panel(post.get("rankmath", {}))
@@ -142,15 +162,20 @@ def _post_section(idx: int, metrics: dict, post: dict, analysis: dict) -> str:
     """
 
 
-def _overview_row(idx: int, metrics: dict, post: dict) -> str:
+def _overview_row(idx: int, metrics: dict, post: dict, prev_metrics: dict | None = None) -> str:
+    pm = prev_metrics
     return (
         f"<tr>"
         f'<td><a href="#post-{idx}">#{idx}</a></td>'
         f'<td><a href="{post["url"]}" target="_blank">{post["title"]}</a></td>'
-        f"<td>{int(metrics['impressions'])}</td>"
-        f"<td>{int(metrics['clicks'])}</td>"
-        f'<td class="{"warn" if metrics["ctr"] < 0.05 else ""}">{_pct(metrics["ctr"])}</td>'
-        f'<td class="{"warn" if metrics["position"] > 20 else ""}">{_pos(metrics["position"])}</td>'
+        f"<td>{int(metrics['impressions'])}"
+        f"{_delta_span(metrics['impressions'], pm['impressions'] if pm else None, fmt='+.0f')}</td>"
+        f"<td>{int(metrics['clicks'])}"
+        f"{_delta_span(metrics['clicks'], pm['clicks'] if pm else None, fmt='+.0f')}</td>"
+        f'<td class="{"warn" if metrics["ctr"] < 0.05 else ""}">{_pct(metrics["ctr"])}'
+        f"{_delta_span(metrics['ctr']*100, pm['ctr']*100 if pm else None, fmt='+.1f')}</td>"
+        f'<td class="{"warn" if metrics["position"] > 20 else ""}">{_pos(metrics["position"])}'
+        f"{_delta_span(metrics['position'], pm['position'] if pm else None, fmt='+.1f', invert=True)}</td>"
         f"</tr>"
     )
 
@@ -159,14 +184,15 @@ def _overview_row(idx: int, metrics: dict, post: dict) -> str:
 
 def build_report(results: list[dict], output_path: str = "seo_report.html") -> str:
     """
-    results: list of dicts with keys: metrics, post, analysis
+    results: list of dicts with keys: metrics, post, analysis, prev_metrics (optional)
     Returns the path to the written file.
     """
     overview_rows = "".join(
-        _overview_row(i + 1, r["metrics"], r["post"]) for i, r in enumerate(results)
+        _overview_row(i + 1, r["metrics"], r["post"], r.get("prev_metrics"))
+        for i, r in enumerate(results)
     )
     post_sections = "".join(
-        _post_section(i + 1, r["metrics"], r["post"], r["analysis"])
+        _post_section(i + 1, r["metrics"], r["post"], r["analysis"], r.get("prev_metrics"))
         for i, r in enumerate(results)
     )
 

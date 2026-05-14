@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SEO Report — www.eagertobehealthy.com</title>
+<style>
+  :root {
+    --bg: #f5f6fa; --card: #fff; --border: #e1e4e8;
+    --text: #24292e; --muted: #586069; --accent: #0366d6;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          background: var(--bg); color: var(--text); line-height: 1.6; }
+  header { background: #1a1a2e; color: #fff; padding: 2rem; }
+  header h1 { font-size: 1.6rem; margin-bottom: .4rem; }
+  header p { color: #aaa; font-size: .9rem; }
+  .stats { display: flex; gap: 1.5rem; margin-top: 1rem; }
+  .stat { background: rgba(255,255,255,.1); border-radius: 8px;
+           padding: .6rem 1.2rem; text-align: center; }
+  .stat-val { font-size: 1.6rem; font-weight: 700; }
+  .stat-label { font-size: .75rem; color: #ccc; }
+  main { max-width: 960px; margin: 2rem auto; padding: 0 1rem; }
+  h2 { font-size: 1.2rem; margin: 2rem 0 1rem; border-bottom: 2px solid var(--border);
+        padding-bottom: .5rem; }
+  h4 { margin: 1.2rem 0 .5rem; color: var(--muted); font-size: .85rem;
+        text-transform: uppercase; letter-spacing: .05em; }
+  table { width: 100%; border-collapse: collapse; font-size: .9rem; margin-bottom: 1rem; }
+  th { background: var(--bg); text-align: left; padding: .5rem .75rem;
+        font-size: .8rem; color: var(--muted); border-bottom: 2px solid var(--border); }
+  td { padding: .5rem .75rem; border-bottom: 1px solid var(--border); }
+  td.warn { color: #e74c3c; font-weight: 600; }
+  tr:hover td { background: #f9f9f9; }
+  .post-card { background: var(--card); border: 1px solid var(--border);
+                border-radius: 8px; margin-bottom: 1rem;
+                box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+  .post-card summary { padding: 1rem 1.2rem; cursor: pointer; display: flex;
+                         align-items: center; gap: .75rem; list-style: none; }
+  .post-card summary::-webkit-details-marker { display: none; }
+  .post-card summary::before { content: "▶"; font-size: .7rem; color: var(--muted);
+                                 transition: transform .2s; }
+  .post-card[open] summary::before { transform: rotate(90deg); }
+  .post-card > div, .post-card > p { padding: 0 1.2rem 1.2rem; }
+  .post-num { background: #1a1a2e; color: #fff; border-radius: 4px;
+               padding: .2rem .5rem; font-size: .8rem; flex-shrink: 0; }
+  .post-title { flex: 1; font-weight: 600; }
+  .post-title a { color: var(--text); text-decoration: none; }
+  .post-title a:hover { color: var(--accent); }
+  .reasons { display: flex; gap: .4rem; flex-wrap: wrap; }
+  .badge { font-size: .7rem; color: #fff; border-radius: 4px;
+             padding: .15rem .5rem; white-space: nowrap; }
+  .metrics-row { display: flex; gap: .75rem; flex-wrap: wrap;
+                  padding: .75rem 1.2rem; background: var(--bg);
+                  border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+  .pill { display: flex; flex-direction: column; align-items: center;
+           background: var(--card); border: 1px solid var(--border);
+           border-radius: 6px; padding: .4rem .8rem; min-width: 80px; }
+  .pill-label { font-size: .7rem; color: var(--muted); }
+  .pill-value { font-size: 1.1rem; font-weight: 700; }
+  .summary-box { background: #fffbf0; border-left: 4px solid #f39c12;
+                  padding: .75rem 1rem; border-radius: 0 6px 6px 0;
+                  margin-bottom: 1rem; font-size: .95rem; }
+  .placement { background: #eaf4fb; color: #2980b9; font-size: .75rem;
+                border-radius: 4px; padding: .15rem .5rem; }
+  ol, ul { padding-left: 1.4rem; }
+  li { margin-bottom: .6rem; }
+  code { background: #f3f4f5; padding: .1rem .35rem; border-radius: 3px;
+          font-size: .9em; }
+  small { color: var(--muted); }
+  .error { color: #e74c3c; font-style: italic; padding: 1rem 0; }
+  a { color: var(--accent); }
+  .rm-panel { background: #f0f7ff; border: 1px solid #c8e0f7; border-radius: 6px;
+               padding: .75rem 1rem; margin-bottom: 1rem; }
+  .rm-grid { display: flex; flex-direction: column; gap: .35rem; margin-top: .4rem; }
+  .rm-row { display: flex; gap: .75rem; font-size: .875rem; }
+  .rm-label { color: var(--muted); min-width: 130px; flex-shrink: 0; }
+  .rm-val { word-break: break-word; }
+</style>
+</head>
+<body>
+<header>
+  <h1>SEO Opportunity Report</h1>
+  <p>www.eagertobehealthy.com &nbsp;·&nbsp; Generated 2026-05-14</p>
+  <div class="stats">
+    <div class="stat">
+      <div class="stat-val">6</div>
+      <div class="stat-label">Posts Flagged</div>
+    </div>
+    <div class="stat">
+      <div class="stat-val">0</div>
+      <div class="stat-label">AI-Analyzed</div>
+    </div>
+    <div class="stat">
+      <div class="stat-val">99</div>
+      <div class="stat-label">Total Impressions</div>
+    </div>
+    <div class="stat">
+      <div class="stat-val">1</div>
+      <div class="stat-label">Total Clicks</div>
+    </div>
+  </div>
+</header>
+<main>
+  <h2>Overview — All Flagged Posts</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>#</th><th>Post</th><th>Impressions</th>
+        <th>Clicks</th><th>CTR</th><th>Avg Position</th>
+      </tr>
+    </thead>
+    <tbody><tr><td><a href="#post-1">#1</a></td><td><a href="https://www.eagertobehealthy.com/ultra-processed-food-snickers-test/" target="_blank">Ultra-Processed Food: Snickers Test</a></td><td>37</td><td>0</td><td class="warn">0.0%</td><td class="">4.7</td></tr><tr><td><a href="#post-2">#2</a></td><td><a href="https://www.eagertobehealthy.com/sardine-fasting-less-hunger-more-health/" target="_blank">Sardine Fasting: Less Hunger, More Health</a></td><td>29</td><td>1</td><td class="warn">3.4%</td><td class="warn">29.8</td></tr><tr><td><a href="#post-3">#3</a></td><td><a href="https://www.eagertobehealthy.com/vitamin-d-sparks-happiness-and-health/" target="_blank">Vitamin D sparks happiness and health.</a></td><td>10</td><td>0</td><td class="warn">0.0%</td><td class="warn">39.7</td></tr><tr><td><a href="#post-4">#4</a></td><td><a href="https://www.eagertobehealthy.com/pills-vs-bills-balancing-supplements-without-making-expensive-urine/" target="_blank">Pills vs. Bills: Balancing Supplements Without Making Expensive Urine</a></td><td>9</td><td>0</td><td class="warn">0.0%</td><td class="">15.8</td></tr><tr><td><a href="#post-5">#5</a></td><td><a href="https://www.eagertobehealthy.com/eggs-are-the-perfect-food/" target="_blank">Eggs Are the Perfect Food</a></td><td>8</td><td>0</td><td class="warn">0.0%</td><td class="warn">24.8</td></tr><tr><td><a href="#post-6">#6</a></td><td><a href="https://www.eagertobehealthy.com/heart-healthy-low-fat-diet-may-have-harmed-women-with-existing-heart-disease-lessons-from-the-landmark-whi-trial/" target="_blank">“Heart-Healthy” Low-Fat Diet May Have Harmed Women with Existing Heart Disease: Lessons from the Landmark WHI Trial</a></td><td>6</td><td>0</td><td class="warn">0.0%</td><td class="">4.2</td></tr></tbody>
+  </table>
+
+  <h2>Post-by-Post Analysis</h2>
+  <p style="color:var(--muted);font-size:.85rem;margin-bottom:1rem">
+    Click any post to expand the full SEO recommendations.
+  </p>
+  
+    <details class="post-card" id="post-1">
+      <summary>
+        <span class="post-num">#1</span>
+        <span class="post-title">
+          <a href="https://www.eagertobehealthy.com/ultra-processed-food-snickers-test/" target="_blank">Ultra-Processed Food: Snickers Test</a>
+        </span>
+        <span class="reasons"><span class="badge" style="background:#e74c3c">Low CTR (0.0% vs 5000% threshold)</span> <span class="badge" style="background:#e74c3c">Very low clicks (0 in 90 days)</span></span>
+      </summary>
+      <div class="metrics-row"><div class="pill"><span class="pill-label">Clicks</span><span class="pill-value" style="color:#2ecc71">0</span></div><div class="pill"><span class="pill-label">Impressions</span><span class="pill-value" style="color:#2ecc71">37</span></div><div class="pill"><span class="pill-label">CTR</span><span class="pill-value" style="color:#e74c3c">0.0%</span></div><div class="pill"><span class="pill-label">Avg Position</span><span class="pill-value" style="color:#2ecc71">4.7</span></div></div>
+      <p class="error">Analysis unavailable for this post.</p>
+    </details>
+    
+    <details class="post-card" id="post-2">
+      <summary>
+        <span class="post-num">#2</span>
+        <span class="post-title">
+          <a href="https://www.eagertobehealthy.com/sardine-fasting-less-hunger-more-health/" target="_blank">Sardine Fasting: Less Hunger, More Health</a>
+        </span>
+        <span class="reasons"><span class="badge" style="background:#e74c3c">Low CTR (3.4% vs 5000% threshold)</span> <span class="badge" style="background:#e74c3c">Weak ranking (avg position 29.8)</span> <span class="badge" style="background:#e74c3c">Very low clicks (1 in 90 days)</span></span>
+      </summary>
+      <div class="metrics-row"><div class="pill"><span class="pill-label">Clicks</span><span class="pill-value" style="color:#2ecc71">1</span></div><div class="pill"><span class="pill-label">Impressions</span><span class="pill-value" style="color:#2ecc71">29</span></div><div class="pill"><span class="pill-label">CTR</span><span class="pill-value" style="color:#e74c3c">3.4%</span></div><div class="pill"><span class="pill-label">Avg Position</span><span class="pill-value" style="color:#e74c3c">29.8</span></div></div>
+      <p class="error">Analysis unavailable for this post.</p>
+    </details>
+    
+    <details class="post-card" id="post-3">
+      <summary>
+        <span class="post-num">#3</span>
+        <span class="post-title">
+          <a href="https://www.eagertobehealthy.com/vitamin-d-sparks-happiness-and-health/" target="_blank">Vitamin D sparks happiness and health.</a>
+        </span>
+        <span class="reasons"><span class="badge" style="background:#e74c3c">Low CTR (0.0% vs 5000% threshold)</span> <span class="badge" style="background:#e74c3c">Weak ranking (avg position 39.7)</span> <span class="badge" style="background:#e74c3c">Very low clicks (0 in 90 days)</span></span>
+      </summary>
+      <div class="metrics-row"><div class="pill"><span class="pill-label">Clicks</span><span class="pill-value" style="color:#2ecc71">0</span></div><div class="pill"><span class="pill-label">Impressions</span><span class="pill-value" style="color:#2ecc71">10</span></div><div class="pill"><span class="pill-label">CTR</span><span class="pill-value" style="color:#e74c3c">0.0%</span></div><div class="pill"><span class="pill-label">Avg Position</span><span class="pill-value" style="color:#e74c3c">39.7</span></div></div>
+      <p class="error">Analysis unavailable for this post.</p>
+    </details>
+    
+    <details class="post-card" id="post-4">
+      <summary>
+        <span class="post-num">#4</span>
+        <span class="post-title">
+          <a href="https://www.eagertobehealthy.com/pills-vs-bills-balancing-supplements-without-making-expensive-urine/" target="_blank">Pills vs. Bills: Balancing Supplements Without Making Expensive Urine</a>
+        </span>
+        <span class="reasons"><span class="badge" style="background:#e74c3c">Low CTR (0.0% vs 5000% threshold)</span> <span class="badge" style="background:#e74c3c">Very low clicks (0 in 90 days)</span></span>
+      </summary>
+      <div class="metrics-row"><div class="pill"><span class="pill-label">Clicks</span><span class="pill-value" style="color:#2ecc71">0</span></div><div class="pill"><span class="pill-label">Impressions</span><span class="pill-value" style="color:#2ecc71">9</span></div><div class="pill"><span class="pill-label">CTR</span><span class="pill-value" style="color:#e74c3c">0.0%</span></div><div class="pill"><span class="pill-label">Avg Position</span><span class="pill-value" style="color:#2ecc71">15.8</span></div></div>
+      <p class="error">Analysis unavailable for this post.</p>
+    </details>
+    
+    <details class="post-card" id="post-5">
+      <summary>
+        <span class="post-num">#5</span>
+        <span class="post-title">
+          <a href="https://www.eagertobehealthy.com/eggs-are-the-perfect-food/" target="_blank">Eggs Are the Perfect Food</a>
+        </span>
+        <span class="reasons"><span class="badge" style="background:#e74c3c">Low CTR (0.0% vs 5000% threshold)</span> <span class="badge" style="background:#e74c3c">Weak ranking (avg position 24.8)</span> <span class="badge" style="background:#e74c3c">Very low clicks (0 in 90 days)</span></span>
+      </summary>
+      <div class="metrics-row"><div class="pill"><span class="pill-label">Clicks</span><span class="pill-value" style="color:#2ecc71">0</span></div><div class="pill"><span class="pill-label">Impressions</span><span class="pill-value" style="color:#2ecc71">8</span></div><div class="pill"><span class="pill-label">CTR</span><span class="pill-value" style="color:#e74c3c">0.0%</span></div><div class="pill"><span class="pill-label">Avg Position</span><span class="pill-value" style="color:#e74c3c">24.8</span></div></div>
+      <p class="error">Analysis unavailable for this post.</p>
+    </details>
+    
+    <details class="post-card" id="post-6">
+      <summary>
+        <span class="post-num">#6</span>
+        <span class="post-title">
+          <a href="https://www.eagertobehealthy.com/heart-healthy-low-fat-diet-may-have-harmed-women-with-existing-heart-disease-lessons-from-the-landmark-whi-trial/" target="_blank">“Heart-Healthy” Low-Fat Diet May Have Harmed Women with Existing Heart Disease: Lessons from the Landmark WHI Trial</a>
+        </span>
+        <span class="reasons"><span class="badge" style="background:#e74c3c">Low CTR (0.0% vs 5000% threshold)</span> <span class="badge" style="background:#e74c3c">Very low clicks (0 in 90 days)</span></span>
+      </summary>
+      <div class="metrics-row"><div class="pill"><span class="pill-label">Clicks</span><span class="pill-value" style="color:#2ecc71">0</span></div><div class="pill"><span class="pill-label">Impressions</span><span class="pill-value" style="color:#2ecc71">6</span></div><div class="pill"><span class="pill-label">CTR</span><span class="pill-value" style="color:#e74c3c">0.0%</span></div><div class="pill"><span class="pill-label">Avg Position</span><span class="pill-value" style="color:#2ecc71">4.2</span></div></div>
+      <p class="error">Analysis unavailable for this post.</p>
+    </details>
+    
+</main>
+</body>
+</html>

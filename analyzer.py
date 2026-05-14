@@ -17,16 +17,25 @@ def _reasons(row: dict) -> list[str]:
     return reasons
 
 
-def identify_low_performers(page_metrics: list[dict]) -> list[dict]:
+def _opportunity_score(row: dict) -> float:
+    """Higher = worse performer = more to gain. impressions × missed-click-rate × position."""
+    return row["impressions"] * (1.0 - row["ctr"]) * row["position"]
+
+
+def identify_low_performers(
+    page_metrics: list[dict],
+    excluded_urls: set[str] | None = None,
+) -> list[dict]:
     """
-    Filter and rank pages that are underperforming.
-    Returns a list sorted by opportunity size (highest impressions first,
-    so we tackle the posts with the most to gain).
+    Filter and rank the worst-performing pages by opportunity score.
+    Pages in excluded_urls (cooldown) are skipped.
     """
+    excluded_urls = excluded_urls or set()
     low = []
     for row in page_metrics:
-        # Skip non-post URLs (home page, category/tag archives, etc.)
         page = row["page"]
+        if page in excluded_urls:
+            continue
         if page.rstrip("/") == config.GSC_SITE_URL.rstrip("/"):
             continue
         if any(seg in page for seg in ["/category/", "/tag/", "/author/", "/page/", "?"]):
@@ -36,6 +45,5 @@ def identify_low_performers(page_metrics: list[dict]) -> list[dict]:
         if reasons:
             low.append({**row, "reasons": reasons})
 
-    # Sort by impressions descending — most visible underperformers first
-    low.sort(key=lambda r: r["impressions"], reverse=True)
+    low.sort(key=_opportunity_score, reverse=True)
     return low[: config.MAX_POSTS_TO_ANALYZE]
