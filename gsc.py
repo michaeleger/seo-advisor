@@ -1,6 +1,7 @@
 """Google Search Console API — full useful extract for Claude handoff."""
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from datetime import date, timedelta
 import os
@@ -11,6 +12,8 @@ from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 
 import config
+
+log = logging.getLogger(__name__)
 
 _SCOPES = ["https://www.googleapis.com/auth/webmasters.readonly"]
 _TOKEN_FILE = "token.json"
@@ -74,6 +77,51 @@ def _query(body: dict[str, Any]) -> list[dict]:
     return resp.get("rows") or []
 
 
+# Search Console returns at most 25 000 rows per request and pages via
+# startRow. A single capped request silently truncates on any site with real
+# traffic, and the loss is invisible — you just get a partial picture.
+_API_MAX_ROWS = 25_000
+# Safety valve so a huge property cannot spin here indefinitely.
+_MAX_PAGES = 40
+
+
+def _query_all(
+    body: dict[str, Any],
+    *,
+    max_rows: int | None = None,
+    label: str = "query",
+) -> list[dict]:
+    """
+    Page through searchanalytics until the result set is exhausted.
+
+    Truncation is logged rather than silent: if we stop early, the caller and
+    the operator both find out.
+    """
+    page_size = min(int(body.get("rowLimit") or _API_MAX_ROWS), _API_MAX_ROWS)
+    if max_rows is not None:
+        page_size = min(page_size, max_rows)
+
+    out: list[dict] = []
+    start = 0
+    for _ in range(_MAX_PAGES):
+        rows = _query({**body, "rowLimit": page_size, "startRow": start})
+        out.extend(rows)
+        if len(rows) < page_size:
+            return out
+        if max_rows is not None and len(out) >= max_rows:
+            log.debug("%s: reached max_rows=%d", label, max_rows)
+            return out[:max_rows]
+        start += len(rows)
+    log.warning(
+        "%s: stopped at the %d-request safety cap (%d rows); results are "
+        "truncated. Narrow DATE_RANGE_DAYS if this matters.",
+        label,
+        _MAX_PAGES,
+        len(out),
+    )
+    return out
+
+
 def _row_metrics(r: dict) -> dict:
     return {
         "clicks": r.get("clicks", 0),
@@ -99,14 +147,15 @@ def _page_filter(page_url: str) -> list[dict]:
 
 def get_page_metrics() -> list[dict]:
     start, end = _date_range()
-    rows = _query(
+    rows = _query_all(
         {
             "startDate": start,
             "endDate": end,
             "dimensions": ["page"],
-            "rowLimit": 25000,
+            "rowLimit": _API_MAX_ROWS,
             "dataState": "final",
-        }
+        },
+        label="page metrics",
     )
     return [{"page": r["keys"][0], **_row_metrics(r)} for r in rows]
 
@@ -248,14 +297,15 @@ def get_page_monthly_trend(page_url: str) -> list[dict]:
 
 def get_site_query_opportunities(limit: int = 50) -> list[dict]:
     start, end = _date_range()
-    rows = _query(
+    rows = _query_all(
         {
             "startDate": start,
             "endDate": end,
             "dimensions": ["query"],
-            "rowLimit": 1000,
+            "rowLimit": _API_MAX_ROWS,
             "dataState": "final",
-        }
+        },
+        label="site query opportunities",
     )
     min_impr = max(2, config.MIN_IMPRESSIONS)
     scored: list[dict] = []
@@ -290,14 +340,15 @@ def get_site_query_opportunities(limit: int = 50) -> list[dict]:
 
 def get_query_cannibalization(limit_queries: int = 40) -> list[dict]:
     start, end = _date_range()
-    rows = _query(
+    rows = _query_all(
         {
             "startDate": start,
             "endDate": end,
             "dimensions": ["query", "page"],
-            "rowLimit": 5000,
+            "rowLimit": _API_MAX_ROWS,
             "dataState": "final",
-        }
+        },
+        label="cannibalization",
     )
     by_query: dict[str, list[dict]] = {}
     for r in rows:
@@ -416,14 +467,15 @@ def get_site_monthly_trend() -> list[dict]:
 def get_top_queries_with_pages(limit: int = 40) -> list[dict]:
     """Top site queries with the best landing page for each."""
     start, end = _date_range()
-    rows = _query(
+    rows = _query_all(
         {
             "startDate": start,
             "endDate": end,
             "dimensions": ["query", "page"],
-            "rowLimit": 3000,
+            "rowLimit": _API_MAX_ROWS,
             "dataState": "final",
-        }
+        },
+        label="top queries with pages",
     )
     best: dict[str, dict] = {}
     totals: dict[str, dict[str, float]] = defaultdict(
