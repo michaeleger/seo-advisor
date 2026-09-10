@@ -77,13 +77,15 @@ def _link_counts(content_html: str, site_host: str) -> dict[str, int]:
 
 def content_structure(content_html: str, *, site_url: str | None = None) -> dict:
     """
-    Summarize a post body the way Rank Math scores it, so the briefing can
-    show structure instead of a truncated wall of text.
+    Summarize a post body the way Rank Math scores it.
+
+    Measurements only — deliberately no article text. The published page is
+    the source of truth for content, markup, images and styling; a stripped
+    copy here would be a degraded duplicate of something already at a URL.
     """
     src = content_html or ""
     plain = _strip_html(src)
-    words = plain.split()
-    total_words = len(words)
+    total_words = len(plain.split())
 
     paragraphs = [p for p in (_strip_html(x) for x in _PARA_RE.findall(src)) if p]
     long_paragraphs = sum(
@@ -107,9 +109,6 @@ def content_structure(content_html: str, *, site_url: str | None = None) -> dict
         "image_count": len(images),
         "images_missing_alt": missing_alt,
         **_link_counts(src, site_host),
-        # The whole article, verbatim. The handoff asks for a rewrite, and a
-        # rewrite driven by excerpts silently drops whatever sat in the middle.
-        "full_text": plain,
     }
 
 

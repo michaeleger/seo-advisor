@@ -4,7 +4,6 @@ Build the handoff report for manual Claude use (semi-automatic model).
 from __future__ import annotations
 
 import json
-import textwrap
 from datetime import date
 from typing import Any
 
@@ -27,13 +26,19 @@ rewritten article, its markup, its metadata, any styling it needs, and
 direction for its images. Do not return a list of suggested edits. Do not
 return "change the title to X" — return the page.
 
+── Read the live page first ────────────────────────────────────────────────
+Each entry below gives the page's URL. THE PUBLISHED PAGE IS THE SOURCE OF
+TRUTH — open it and read it before rewriting. It carries the full content,
+markup, images and styling that this briefing deliberately does not
+duplicate.
+
 ── What this briefing is ───────────────────────────────────────────────────
-It gives you MEASUREMENTS and CONSTRAINTS about each page as it exists today:
+It gives you MEASUREMENTS and DIAGNOSTICS about each page as it exists today:
 1) Google Search Console — queries, trends, devices, countries, opportunities
 2) Google Ads Keyword Planner — volume/competition when configured
 3) Bing Webmaster — complementary engine data when configured
-4) Rank Math score + WordPress content: heading outline, word/paragraph/image/
-   link counts, and the current article verbatim
+4) Rank Math score + structural counts: heading outline, word/paragraph/
+   image/link counts
 5) PageSpeed Insights (lab) + CrUX field data when available
 
 It does NOT tell you how the result should look. Nothing here is a style
@@ -51,18 +56,32 @@ Standards move. Use today's, not the ones implied by the existing page or by
 the shape of this briefing. If your judgement of current best practice
 conflicts with how the page is built now, follow your judgement and say so.
 
+── Write for a reader, not for a scorer ────────────────────────────────────
+Write for a person who arrived with a question. A human editor reviews every
+rewrite and WILL REJECT copy that reads as though it was written for a search
+engine or an answer engine. That judgement outranks every metric here.
+
+- Do not pad to reach a word count.
+- Do not repeat a keyword beyond what natural prose calls for.
+- Do not bolt on headings, links, or FAQ blocks that exist only to satisfy a
+  checklist.
+- The Rank Math diagnostics are OBSERVATIONS, NOT A SPECIFICATION. Where
+  satisfying one would make the page worse to read, leave it unmet and say
+  why in your notes.
+
+A page that scores 70 and reads well beats a page that scores 95 and reads
+like it was assembled for a crawler.
+
 ── Constraints that are real ───────────────────────────────────────────────
-- Use ONLY the data in this briefing. Do not invent metrics, traffic, or
-  rankings. Do not invent search volume when Keyword Planner is absent.
-- Preserve the factual substance of the current article. It is provided in
-  full — a rewrite may restructure, cut, and expand, but must not silently
-  drop information the page currently carries, and must not introduce health
-  claims the source does not support.
+- Use ONLY the data in this briefing and the live page. Do not invent
+  metrics, traffic, or rankings. Do not invent search volume when Keyword
+  Planner is absent.
+- Preserve the factual substance of the live article. A rewrite may
+  restructure, cut, and expand, but must not silently drop information the
+  page carries, and must not introduce health claims the source does not
+  support.
 - Keep the existing URL. Flag it separately if you believe a slug should
   change; do not assume the change.
-- "Falls short of Rank Math's rubric" lines describe the Rank Math plugin's
-  own scoring thresholds. Treat them as a scoring target to clear, not as
-  design guidance.
 - PageSpeed findings are real defects on the live page — fix their causes in
   the rewrite (LCP image handling, layout shift, render-blocking, heading
   order, alt text, tap targets) rather than restating them as advice.
@@ -77,8 +96,9 @@ GSC opportunity within a tier.
 - Cannibalization notes where multiple URLs compete for one query.
 - Top 10 actions this week, highest-leverage first.
 
-Tone: practical and health/wellness-aware. The output should be ready to
-publish, not ready to discuss.
+Tone: practical and health/wellness-aware. Write the way a knowledgeable
+person explains something to someone who asked. The output should be ready
+to publish, not ready to discuss.
 """
 
 
@@ -143,9 +163,10 @@ def _content_lines(cs: dict[str, Any]) -> list[str]:
     out = ["- **Content:** " + " · ".join(bits)]
 
     # Rank Math's own scoring thresholds — the plugin's rules, not design
-    # standards. Each line states the measurement first and names the
-    # threshold as Rank Math's, so a rubric change dates the label, not
-    # the fact. Nothing here constrains how the rewrite should look.
+    # standards and not a specification. Each line states the measurement
+    # first and names the threshold as Rank Math's, so a rubric change dates
+    # the label, not the fact. Rendered as a diagnostic: treating these as
+    # targets is what produces padded, link-stuffed copy a reader rejects.
     misses: list[str] = []
     if wc < _RM_MIN_WORDS:
         misses.append(f"{wc:,} words (Rank Math wants ≥{_RM_MIN_WORDS:,})")
@@ -163,7 +184,10 @@ def _content_lines(cs: dict[str, Any]) -> list[str]:
     if not any(h.get("level") == 2 for h in headings):
         misses.append("no H2 subheadings")
     if misses:
-        out.append("- **Falls short of Rank Math's rubric:** " + "; ".join(misses))
+        out.append(
+            "- **Rank Math diagnostics (observations, not targets):** "
+            + "; ".join(misses)
+        )
 
     if headings:
         out.append("- **Heading outline:**")
@@ -175,13 +199,6 @@ def _content_lines(cs: dict[str, Any]) -> list[str]:
     else:
         out.append("- **Heading outline:** _no headings found_")
 
-    full = (cs.get("full_text") or "").strip()
-    if full:
-        out.append(f"- **Current content, verbatim ({wc:,} words):**")
-        out.append("")
-        out.append("```text")
-        out.extend(textwrap.wrap(full, width=100) or [full])
-        out.append("```")
     return out
 
 
@@ -305,8 +322,10 @@ def briefing_to_markdown(briefing: dict[str, Any]) -> str:
         "markup, metadata, styling and image direction.",
         "4. Apply the result with `wp.py`.",
         "",
-        "The model chooses the output format and the design standards it "
-        "writes to. This briefing supplies measurements and constraints only.",
+        "The model reads each **live page** for the current content and "
+        "chooses the output format and design standards it writes to. This "
+        "briefing supplies measurements and diagnostics only — they are "
+        "observations about each page, not a specification to write against.",
         "",
         "### Selection order",
         "1. Identify worst/improvable pages (RankMath tiers + GSC).",
