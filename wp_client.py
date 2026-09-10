@@ -107,10 +107,9 @@ def content_structure(content_html: str, *, site_url: str | None = None) -> dict
         "image_count": len(images),
         "images_missing_alt": missing_alt,
         **_link_counts(src, site_host),
-        # Short posts come through whole; only split into opening/closing
-        # once the two slices would stop overlapping.
-        "first_words": " ".join(words if total_words <= 500 else words[:300]),
-        "last_words": " ".join(words[-200:]) if total_words > 500 else "",
+        # The whole article, verbatim. The handoff asks for a rewrite, and a
+        # rewrite driven by excerpts silently drops whatever sat in the middle.
+        "full_text": plain,
     }
 
 

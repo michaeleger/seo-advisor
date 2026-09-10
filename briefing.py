@@ -4,48 +4,81 @@ Build the handoff report for manual Claude use (semi-automatic model).
 from __future__ import annotations
 
 import json
+import textwrap
 from datetime import date
 from typing import Any
 
 import config
 
+# Rank Math's own scoring thresholds, mirrored here only so the briefing can
+# say which of ITS rules a page misses. These describe the plugin's rubric —
+# they are not design standards and must never be presented as such. The
+# rewrite's markup, styling and formatting are the model's call.
+_RM_MIN_WORDS = 600
+_RM_LONG_PARAGRAPH_WORDS = 120
+
 CLAUDE_HANDOFF_PROMPT = """\
-You are a senior SEO editor for a health and wellness website (Eager to Be Healthy).
+You are a senior content editor and front-end developer for a health and
+wellness website (Eager to Be Healthy).
 
-Pages were selected first (worst / most improvable), then enriched. PageSpeed was
-run only on those selected URLs — not the whole site.
+YOUR TASK IS A REWRITE, NOT AN SEO TWEAK.
+For each page below, produce a complete, publication-ready replacement: the
+rewritten article, its markup, its metadata, any styling it needs, and
+direction for its images. Do not return a list of suggested edits. Do not
+return "change the title to X" — return the page.
 
-Sources:
+── What this briefing is ───────────────────────────────────────────────────
+It gives you MEASUREMENTS and CONSTRAINTS about each page as it exists today:
 1) Google Search Console — queries, trends, devices, countries, opportunities
 2) Google Ads Keyword Planner — volume/competition when configured
 3) Bing Webmaster — complementary engine data when configured
-4) RankMath + WordPress content structure (heading outline, word count,
-   paragraph/image/link counts, and the opening and closing text)
+4) Rank Math score + WordPress content: heading outline, word/paragraph/image/
+   link counts, and the current article verbatim
 5) PageSpeed Insights (lab) + CrUX field data when available
 
-You will produce keyword strategy AND guidance for fresh HTML. Use PageSpeed so
-rewrites fix real issues (LCP images, CLS, render-blocking, title/meta, headings,
-alt text, tap targets) — not generic speed advice.
+It does NOT tell you how the result should look. Nothing here is a style
+guide, a markup convention, or a design system.
 
-Posts are ordered RankMath improvable-first (under 20 → 40 → 60 → 80), then GSC
-opportunity within a tier.
+── What you decide ─────────────────────────────────────────────────────────
+The output format and every design decision are yours:
+- Which artifacts each page needs (HTML, metadata as JSON, CSS, image
+  direction) and how to structure them.
+- Markup, semantics, accessibility, responsive behaviour, and performance
+  technique — apply the standards that are CURRENT as of your knowledge.
+- Typography, layout, component structure, image formats and sizing.
 
-Using ONLY this briefing (do not invent metrics), produce:
-- Executive summary: what to fix first and why
-- Overview of selected posts
-- Per post:
-  - Primary + supporting keywords (grounded in GSC/Bing/Planner)
-  - RankMath context; title / H1 / meta ideas; content gaps
-  - Structural fixes that clear the rules listed under "Rank Math gaps"
-    (word count, H2 coverage, internal + external dofollow links, image
-    alt text, paragraph length)
-  - HTML rewrite guidance from PageSpeed (prioritized for fresh markup)
-  - Lab vs field (CrUX) notes when both exist
-- Cannibalization notes
-- Top 10 actions this week (improvable pages + HTML/CWV fixes first)
+Standards move. Use today's, not the ones implied by the existing page or by
+the shape of this briefing. If your judgement of current best practice
+conflicts with how the page is built now, follow your judgement and say so.
 
-Do not invent search volume when Planner is missing.
-Tone: practical, health/wellness-aware — suitable for shipping improved HTML.
+── Constraints that are real ───────────────────────────────────────────────
+- Use ONLY the data in this briefing. Do not invent metrics, traffic, or
+  rankings. Do not invent search volume when Keyword Planner is absent.
+- Preserve the factual substance of the current article. It is provided in
+  full — a rewrite may restructure, cut, and expand, but must not silently
+  drop information the page currently carries, and must not introduce health
+  claims the source does not support.
+- Keep the existing URL. Flag it separately if you believe a slug should
+  change; do not assume the change.
+- "Falls short of Rank Math's rubric" lines describe the Rank Math plugin's
+  own scoring thresholds. Treat them as a scoring target to clear, not as
+  design guidance.
+- PageSpeed findings are real defects on the live page — fix their causes in
+  the rewrite (LCP image handling, layout shift, render-blocking, heading
+  order, alt text, tap targets) rather than restating them as advice.
+
+Pages are ordered Rank Math improvable-first (under 20 → 40 → 60 → 80), then
+GSC opportunity within a tier.
+
+── Also produce ────────────────────────────────────────────────────────────
+- Executive summary: what to rewrite first and why.
+- Per page: the target primary + supporting keywords you wrote to, grounded
+  in GSC/Bing/Planner, and a short note on what you changed and why.
+- Cannibalization notes where multiple URLs compete for one query.
+- Top 10 actions this week, highest-leverage first.
+
+Tone: practical and health/wellness-aware. The output should be ready to
+publish, not ready to discuss.
 """
 
 
@@ -92,7 +125,11 @@ def _content_lines(cs: dict[str, Any]) -> list[str]:
     if paras:
         bits.append(
             _plural(paras, "paragraph")
-            + (f" ({long_p} over 120 words)" if long_p else "")
+            + (
+                f" ({long_p} over {_RM_LONG_PARAGRAPH_WORDS} words)"
+                if long_p
+                else ""
+            )
         )
     bits.append(
         _plural(imgs, "image") + (f" ({no_alt} missing alt)" if no_alt else "")
@@ -105,22 +142,28 @@ def _content_lines(cs: dict[str, Any]) -> list[str]:
     )
     out = ["- **Content:** " + " · ".join(bits)]
 
-    # Call out the Rank Math rules this page currently fails.
-    gaps: list[str] = []
-    if wc < 600:
-        gaps.append(f"under 600 words ({wc:,})")
+    # Rank Math's own scoring thresholds — the plugin's rules, not design
+    # standards. Each line states the measurement first and names the
+    # threshold as Rank Math's, so a rubric change dates the label, not
+    # the fact. Nothing here constrains how the rewrite should look.
+    misses: list[str] = []
+    if wc < _RM_MIN_WORDS:
+        misses.append(f"{wc:,} words (Rank Math wants ≥{_RM_MIN_WORDS:,})")
     if not internal:
-        gaps.append("no internal links")
+        misses.append("0 internal links (wants ≥1)")
     if not dofollow:
-        gaps.append("no external dofollow link")
+        misses.append("0 external dofollow links (wants ≥1)")
     if no_alt:
-        gaps.append(f"{no_alt} image(s) missing alt text")
+        misses.append(f"{no_alt} of {_plural(imgs, 'image')} missing alt text")
     if long_p:
-        gaps.append(f"{long_p} paragraph(s) over 120 words")
+        misses.append(
+            f"{_plural(long_p, 'paragraph')} over "
+            f"{_RM_LONG_PARAGRAPH_WORDS} words"
+        )
     if not any(h.get("level") == 2 for h in headings):
-        gaps.append("no H2 subheadings")
-    if gaps:
-        out.append("- **Rank Math gaps:** " + "; ".join(gaps))
+        misses.append("no H2 subheadings")
+    if misses:
+        out.append("- **Falls short of Rank Math's rubric:** " + "; ".join(misses))
 
     if headings:
         out.append("- **Heading outline:**")
@@ -132,15 +175,13 @@ def _content_lines(cs: dict[str, Any]) -> list[str]:
     else:
         out.append("- **Heading outline:** _no headings found_")
 
-    first = (cs.get("first_words") or "").strip()
-    last = (cs.get("last_words") or "").strip()
-    if first:
-        label = "Opening (first 300 words)" if last else f"Full text ({wc:,} words)"
-        out.append(f"- **{label}:**")
-        out.append(f"  > {first}")
-    if last:
-        out.append("- **Closing (last 200 words):**")
-        out.append(f"  > {last}")
+    full = (cs.get("full_text") or "").strip()
+    if full:
+        out.append(f"- **Current content, verbatim ({wc:,} words):**")
+        out.append("")
+        out.append("```text")
+        out.extend(textwrap.wrap(full, width=100) or [full])
+        out.append("```")
     return out
 
 
@@ -259,8 +300,13 @@ def briefing_to_markdown(briefing: dict[str, Any]) -> str:
         "",
         "## How to use",
         "1. Copy this entire file.",
-        "2. Paste into Claude.",
-        "3. Ask for keyword strategy **and** fresh HTML guidance using PageSpeed issues.",
+        "2. Paste into Claude or Grok.",
+        "3. The prompt below asks for a full rewrite of each page — content, "
+        "markup, metadata, styling and image direction.",
+        "4. Apply the result with `wp.py`.",
+        "",
+        "The model chooses the output format and the design standards it "
+        "writes to. This briefing supplies measurements and constraints only.",
         "",
         "### Selection order",
         "1. Identify worst/improvable pages (RankMath tiers + GSC).",
