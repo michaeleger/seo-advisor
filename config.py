@@ -18,7 +18,7 @@ LOCAL_LLM_PROVIDER = os.getenv(
 ).strip().lower()
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma4:26b-t6")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
 OLLAMA_NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "4096"))
 OLLAMA_NUM_THREAD = int(os.getenv("OLLAMA_NUM_THREAD", "6"))
 
@@ -30,10 +30,12 @@ LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "2048"))
 LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.2"))
 LLM_TIMEOUT_SECONDS = int(os.getenv("LLM_TIMEOUT_SECONDS", "600"))
 
+# Defaults match .env.example so behaviour is the same with or without
+# an explicit override in .env.
 DATE_RANGE_DAYS = int(
-    os.getenv("DATE_RANGE_DAYS", os.getenv("DAYS_BACK", "90"))
+    os.getenv("DATE_RANGE_DAYS", os.getenv("DAYS_BACK", "365"))
 )
-MIN_IMPRESSIONS = int(os.getenv("MIN_IMPRESSIONS", "10"))
+MIN_IMPRESSIONS = int(os.getenv("MIN_IMPRESSIONS", "1"))
 MAX_CTR = float(os.getenv("MAX_CTR", "0.05"))
 MAX_POSITION = float(os.getenv("MAX_POSITION", "20"))
 MAX_POSTS_TO_ANALYZE = int(os.getenv("MAX_POSTS_TO_ANALYZE", "10"))
