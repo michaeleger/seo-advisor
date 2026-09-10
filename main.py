@@ -285,6 +285,7 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     results: list[dict] = []
+    pending_state: list[tuple[str, dict]] = []
     for i, metrics in enumerate(low_performers, 1):
         url = metrics["page"]
         log.info("[%d/%d] %s", i, len(low_performers), url)
@@ -363,7 +364,10 @@ def main(argv: list[str] | None = None) -> None:
                 "monthly_trend": monthly_trend,
                 "prev_metrics": prev_metrics,
             })
-            db.save_page_state(url, metrics, str(report_md))
+            # Defer the cooldown write until the report is actually written,
+            # so a crash mid-run doesn't put pages into cooldown with no
+            # delivered report.
+            pending_state.append((url, dict(metrics)))
 
         except RuntimeError:
             raise
@@ -455,6 +459,10 @@ def main(argv: list[str] | None = None) -> None:
     _write_text(briefing_json, briefing.briefing_to_json(payload))
     _write_text(report_md, briefing.briefing_to_markdown(payload))
     report.build_report(results, output_path=str(report_html))
+
+    # Report is on disk — now record cooldown state for the pages it covers.
+    for state_url, state_metrics in pending_state:
+        db.save_page_state(state_url, state_metrics, str(report_md))
 
     log.info("Done. %d page(s) written for Claude handoff:", len(results))
     log.info("  Markdown (paste into Claude): %s", report_md.resolve())
