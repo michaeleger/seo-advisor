@@ -32,6 +32,12 @@ TRUTH — open it and read it before rewriting. It carries the full content,
 markup, images and styling that this briefing deliberately does not
 duplicate.
 
+IF YOU CANNOT OPEN A PAGE, STOP AND SAY SO for that page. Do not reconstruct
+the article from the measurements below — a heading outline and a word count
+are not the article, and rewriting from them means inventing its substance.
+Say which URL you could not read and move on to the next page; the content
+can be pulled over the WordPress REST API and supplied to you.
+
 ── What this briefing is ───────────────────────────────────────────────────
 It gives you MEASUREMENTS and DIAGNOSTICS about each page as it exists today:
 1) Google Search Console — queries, trends, devices, countries, opportunities
@@ -326,6 +332,10 @@ def briefing_to_markdown(briefing: dict[str, Any]) -> str:
         "chooses the output format and design standards it writes to. This "
         "briefing supplies measurements and diagnostics only — they are "
         "observations about each page, not a specification to write against.",
+        "",
+        "If the model reports it could not open a page, pull that page over "
+        "the WordPress REST API (`wp.py`) and paste it in. It is told to "
+        "stop rather than rewrite a page it has not read.",
         "",
         "### Selection order",
         "1. Identify worst/improvable pages (RankMath tiers + GSC).",
