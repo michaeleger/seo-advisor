@@ -3,6 +3,14 @@ from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
+
+def _csv_env(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    """Comma-separated env var, lowercased. Unset falls back to `default`."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return tuple(s.strip().lower() for s in raw.split(",") if s.strip())
+
 GSC_CREDENTIALS_FILE = os.getenv("GSC_CREDENTIALS_FILE", "client_secret.json")
 GSC_SITE_URL = os.getenv("GSC_SITE_URL", "https://eagertobehealthy.com/")
 WP_SITE_URL = os.getenv("WP_SITE_URL", "https://www.eagertobehealthy.com")
@@ -82,6 +90,47 @@ BING_SITE_URL = os.getenv(
     "BING_SITE_URL", "https://www.eagertobehealthy.com/"
 ).strip()
 USE_BING = os.getenv("USE_BING", "1").strip().lower() in ("1", "true", "yes", "on")
+
+# ─── Page filtering — URLs that are never worth optimizing ───────────────────
+# Defaults are deliberately generic so this tool is not wired to one site.
+# Put site-specific junk slugs in SKIP_SLUGS_EXTRA, which ADDS to SKIP_SLUGS
+# rather than replacing it. The other three REPLACE their defaults when set.
+
+# Structural WordPress paths, matched as substrings of the URL path.
+SKIP_PATH_SEGMENTS = _csv_env(
+    "SKIP_PATH_SEGMENTS",
+    (
+        "/category/",
+        "/tag/",
+        "/author/",
+        "/page/",
+        "/wp-json/",
+        "/wp-admin/",
+        "/feed/",
+    ),
+)
+
+# Exact slugs that are never article content.
+SKIP_SLUGS = frozenset(
+    _csv_env(
+        "SKIP_SLUGS",
+        (
+            "",
+            "home",
+            "about",
+            "contact",
+            "privacy-policy",
+            "cookie-policy",
+            "terms",
+            "terms-of-service",
+        ),
+    )
+) | frozenset(_csv_env("SKIP_SLUGS_EXTRA", ()))
+
+# Substrings that mark a slug as non-content wherever they appear.
+SKIP_SLUG_SUBSTRINGS = _csv_env(
+    "SKIP_SLUG_SUBSTRINGS", ("privacy-policy", "cookie", "terms-of")
+)
 
 # ─── RankMath prioritization ─────────────────────────────────────────────────
 # Prefer most improvable posts: score tiers under 20 / 40 / 60 / 80 first.

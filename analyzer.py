@@ -1,45 +1,13 @@
 """Identify and prioritize improvable posts: RankMath score tiers + GSC opportunity."""
 from __future__ import annotations
 
+import logging
 from urllib.parse import urlparse
 
 import config
 import wp_client
 
-# Paths / slugs that are not optimizable blog content
-_SKIP_PATH_PREFIXES = (
-    "/category/",
-    "/tag/",
-    "/author/",
-    "/page/",
-    "/wp-json/",
-    "/wp-admin/",
-    "/feed/",
-)
-
-_SKIP_SLUG_EXACT = {
-    "",
-    "na",
-    "beaguest",
-    "creative-team",
-    "eager-associates",
-    "recipe-courses",
-    "recipe-dietary",
-    "privacy-policy",
-    "cookie-policy",
-    "terms-of-service",
-    "terms",
-    "about",
-    "contact",
-    "home",
-}
-
-_SKIP_SLUG_CONTAINS = (
-    "privacy-policy",
-    "cookie",
-    "terms-of",
-    "social-auto-posting",
-)
+log = logging.getLogger(__name__)
 
 
 def _slug(url: str) -> str:
@@ -55,21 +23,25 @@ def _is_homepage(url: str) -> bool:
 
 
 def _is_utility_page(url: str) -> bool:
+    """
+    True for URLs that are never optimizable article content.
+
+    Filtering is config-driven (see SKIP_* in config.py) so the tool is not
+    wired to one site. Note there is deliberately no minimum-slug-length
+    rule: it silently dropped legitimate short slugs like /abs/ and /gut/.
+    """
     if _is_homepage(url):
         return True
     parsed = urlparse(url)
-    path = parsed.path or "/"
-    lower = path.lower()
-    if "?" in url or parsed.query:
+    if parsed.query:
         return True
-    if any(seg in lower for seg in _SKIP_PATH_PREFIXES):
+    lower = (parsed.path or "/").lower()
+    if any(seg in lower for seg in config.SKIP_PATH_SEGMENTS):
         return True
     slug = _slug(url)
-    if slug in _SKIP_SLUG_EXACT:
+    if slug in config.SKIP_SLUGS:
         return True
-    if any(part in slug for part in _SKIP_SLUG_CONTAINS):
-        return True
-    if len(slug) < 4:
+    if any(part in slug for part in config.SKIP_SLUG_SUBSTRINGS):
         return True
     return False
 
@@ -153,6 +125,7 @@ def identify_low_performers(
 
     # Dedupe GSC rows
     best_by_key: dict[str, dict] = {}
+    skipped_utility: list[str] = []
     for row in page_metrics:
         page = row["page"]
         if page in excluded_urls:
@@ -160,6 +133,7 @@ def identify_low_performers(
         if page.rstrip("/") == site:
             continue
         if _is_utility_page(page):
+            skipped_utility.append(page)
             continue
 
         key = _canonical_key(page)
@@ -252,6 +226,14 @@ def identify_low_performers(
                 -c.get("gsc_opportunity", 0.0),
             )
         return (0, 0, -c.get("gsc_opportunity", 0.0))
+
+    if skipped_utility:
+        log.info(
+            "  %d page(s) filtered as non-content (SKIP_* config); -v to list.",
+            len(skipped_utility),
+        )
+        for url in skipped_utility:
+            log.debug("    non-content: %s", url)
 
     candidates.sort(key=_sort_key)
     return candidates[: config.MAX_POSTS_TO_ANALYZE]
