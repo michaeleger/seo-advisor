@@ -20,6 +20,100 @@ def _strip_html(html: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+# ── Content structure (mirrors what Rank Math actually scores) ───────────────
+# Regex rather than a parser: WordPress `content.rendered` is well-formed
+# enough for these signals, and it keeps the dependency list at zero.
+_HEADING_RE = re.compile(r"<h([1-6])\b[^>]*>(.*?)</h\1\s*>", re.I | re.S)
+_PARA_RE = re.compile(r"<p\b[^>]*>(.*?)</p\s*>", re.I | re.S)
+_IMG_RE = re.compile(r"<img\b[^>]*>", re.I)
+_ANCHOR_RE = re.compile(r"<a\b([^>]*)>", re.I)
+_ALT_RE = re.compile(r"\balt\s*=\s*[\"']([^\"']*)[\"']", re.I)
+_HREF_RE = re.compile(r"\bhref\s*=\s*[\"']([^\"']+)[\"']", re.I)
+_REL_RE = re.compile(r"\brel\s*=\s*[\"']([^\"']*)[\"']", re.I)
+
+# Rank Math flags paragraphs longer than this in its readability checks.
+_LONG_PARAGRAPH_WORDS = 120
+
+
+def _bare_host(url: str) -> str:
+    host = (urlparse(url or "").netloc or "").lower()
+    return host[4:] if host.startswith("www.") else host
+
+
+def _headings(content_html: str) -> list[dict]:
+    out: list[dict] = []
+    for level, inner in _HEADING_RE.findall(content_html or ""):
+        text = _strip_html(inner)
+        if text:
+            out.append({"level": int(level), "text": text[:160]})
+    return out
+
+
+def _link_counts(content_html: str, site_host: str) -> dict[str, int]:
+    internal = external = external_dofollow = 0
+    for attrs in _ANCHOR_RE.findall(content_html or ""):
+        href_m = _HREF_RE.search(attrs)
+        if not href_m:
+            continue
+        href = href_m.group(1).strip()
+        if href.startswith("#") or href.lower().startswith(
+            ("mailto:", "tel:", "javascript:", "data:")
+        ):
+            continue
+        host = _bare_host(href)
+        if not host or host == site_host:
+            internal += 1
+            continue
+        external += 1
+        rel_m = _REL_RE.search(attrs)
+        if not rel_m or "nofollow" not in rel_m.group(1).lower():
+            external_dofollow += 1
+    return {
+        "internal_links": internal,
+        "external_links": external,
+        "external_dofollow_links": external_dofollow,
+    }
+
+
+def content_structure(content_html: str, *, site_url: str | None = None) -> dict:
+    """
+    Summarize a post body the way Rank Math scores it, so the briefing can
+    show structure instead of a truncated wall of text.
+    """
+    src = content_html or ""
+    plain = _strip_html(src)
+    words = plain.split()
+    total_words = len(words)
+
+    paragraphs = [p for p in (_strip_html(x) for x in _PARA_RE.findall(src)) if p]
+    long_paragraphs = sum(
+        1 for p in paragraphs if len(p.split()) > _LONG_PARAGRAPH_WORDS
+    )
+
+    images = _IMG_RE.findall(src)
+    missing_alt = 0
+    for tag in images:
+        alt_m = _ALT_RE.search(tag)
+        if not alt_m or not alt_m.group(1).strip():
+            missing_alt += 1
+
+    site_host = _bare_host(site_url or getattr(config, "WP_SITE_URL", "") or "")
+
+    return {
+        "word_count": total_words,
+        "headings": _headings(src),
+        "paragraph_count": len(paragraphs),
+        "long_paragraphs": long_paragraphs,
+        "image_count": len(images),
+        "images_missing_alt": missing_alt,
+        **_link_counts(src, site_host),
+        # Short posts come through whole; only split into opening/closing
+        # once the two slices would stop overlapping.
+        "first_words": " ".join(words if total_words <= 500 else words[:300]),
+        "last_words": " ".join(words[-200:]) if total_words > 500 else "",
+    }
+
+
 def _slug_from_url(page_url: str) -> str | None:
     path = urlparse(page_url).path.rstrip("/")
     if not path:
@@ -88,6 +182,7 @@ def _to_post_dict(p: dict) -> dict:
         "title": title,
         "url": p.get("link") or "",
         "content_plain": _strip_html(content_html)[:3000],
+        "content": content_structure(content_html),
         "rankmath": rankmath,
         "type": p.get("type") or "post",
         "slug": p.get("slug") or _slug_from_url(p.get("link") or "") or "",
@@ -413,6 +508,7 @@ def list_content_with_rankmath(
                 "title": sc.get("title") or f"Post {pid}",
                 "url": sc.get("url") or "",
                 "content_plain": "",
+                "content": content_structure(""),
                 "rankmath": {
                     "seo_score": sc.get("seo_score"),
                     "focus_keyword": sc.get("focus_keyword") or "",

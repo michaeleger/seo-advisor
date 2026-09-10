@@ -300,6 +300,7 @@ def main(argv: list[str] | None = None) -> None:
                     "title": slug.title() or url,
                     "url": url,
                     "content_plain": "",
+                    "content": wp_client.content_structure(""),
                     "rankmath": {},
                     "type": "unknown",
                 }

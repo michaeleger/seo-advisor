@@ -19,7 +19,8 @@ Sources:
 1) Google Search Console — queries, trends, devices, countries, opportunities
 2) Google Ads Keyword Planner — volume/competition when configured
 3) Bing Webmaster — complementary engine data when configured
-4) RankMath + WordPress content
+4) RankMath + WordPress content structure (heading outline, word count,
+   paragraph/image/link counts, and the opening and closing text)
 5) PageSpeed Insights (lab) + CrUX field data when available
 
 You will produce keyword strategy AND guidance for fresh HTML. Use PageSpeed so
@@ -35,6 +36,9 @@ Using ONLY this briefing (do not invent metrics), produce:
 - Per post:
   - Primary + supporting keywords (grounded in GSC/Bing/Planner)
   - RankMath context; title / H1 / meta ideas; content gaps
+  - Structural fixes that clear the rules listed under "Rank Math gaps"
+    (word count, H2 coverage, internal + external dofollow links, image
+    alt text, paragraph length)
   - HTML rewrite guidance from PageSpeed (prioritized for fresh markup)
   - Lab vs field (CrUX) notes when both exist
 - Cannibalization notes
@@ -61,6 +65,83 @@ def _fmt_delta(v: float | None, kind: str = "num") -> str:
     if abs(v) >= 10:
         return f"{sign}{v:.0f}"
     return f"{sign}{v:.1f}"
+
+
+def _content_lines(cs: dict[str, Any]) -> list[str]:
+    """Render the content structure the way Rank Math looks at a page."""
+    if not cs:
+        return ["- **Content:** not retrieved from WordPress"]
+
+    wc = int(cs.get("word_count") or 0)
+    headings = cs.get("headings") or []
+    if not wc and not headings:
+        return ["- **Content:** not retrieved from WordPress"]
+
+    internal = int(cs.get("internal_links") or 0)
+    external = int(cs.get("external_links") or 0)
+    dofollow = int(cs.get("external_dofollow_links") or 0)
+    paras = int(cs.get("paragraph_count") or 0)
+    long_p = int(cs.get("long_paragraphs") or 0)
+    imgs = int(cs.get("image_count") or 0)
+    no_alt = int(cs.get("images_missing_alt") or 0)
+
+    def _plural(n: int, word: str) -> str:
+        return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
+    bits = [f"{wc:,} words"]
+    if paras:
+        bits.append(
+            _plural(paras, "paragraph")
+            + (f" ({long_p} over 120 words)" if long_p else "")
+        )
+    bits.append(
+        _plural(imgs, "image") + (f" ({no_alt} missing alt)" if no_alt else "")
+        if imgs
+        else "no images"
+    )
+    bits.append(
+        f"{internal} internal / {external} external links"
+        + (f" ({dofollow} dofollow)" if external else "")
+    )
+    out = ["- **Content:** " + " · ".join(bits)]
+
+    # Call out the Rank Math rules this page currently fails.
+    gaps: list[str] = []
+    if wc < 600:
+        gaps.append(f"under 600 words ({wc:,})")
+    if not internal:
+        gaps.append("no internal links")
+    if not dofollow:
+        gaps.append("no external dofollow link")
+    if no_alt:
+        gaps.append(f"{no_alt} image(s) missing alt text")
+    if long_p:
+        gaps.append(f"{long_p} paragraph(s) over 120 words")
+    if not any(h.get("level") == 2 for h in headings):
+        gaps.append("no H2 subheadings")
+    if gaps:
+        out.append("- **Rank Math gaps:** " + "; ".join(gaps))
+
+    if headings:
+        out.append("- **Heading outline:**")
+        for h in headings[:40]:
+            level = int(h.get("level") or 2)
+            indent = "  " * level
+            text = str(h.get("text") or "").replace("|", "/")
+            out.append(f"{indent}- H{level} · {text}")
+    else:
+        out.append("- **Heading outline:** _no headings found_")
+
+    first = (cs.get("first_words") or "").strip()
+    last = (cs.get("last_words") or "").strip()
+    if first:
+        label = "Opening (first 300 words)" if last else f"Full text ({wc:,} words)"
+        out.append(f"- **{label}:**")
+        out.append(f"  > {first}")
+    if last:
+        out.append("- **Closing (last 200 words):**")
+        out.append(f"  > {last}")
+    return out
 
 
 def build_briefing_payload(
@@ -119,7 +200,7 @@ def build_briefing_payload(
             }
             if analysis
             else None,
-            "content_excerpt": (post.get("content_plain") or "")[:1500],
+            "content_structure": post.get("content") or {},
         })
 
     return {
@@ -517,7 +598,7 @@ def briefing_to_markdown(briefing: dict[str, Any]) -> str:
                 f"- **Local LLM primary:** {kw.get('primary_keyword') or '(none)'}"
             )
 
-        excerpt = (p.get("content_excerpt") or "").strip()
+        content_lines = _content_lines(p.get("content_structure") or {})
         # PageSpeed (selected pages only)
         ps = p.get("pagespeed") or {}
         if ps:
@@ -559,9 +640,7 @@ def briefing_to_markdown(briefing: dict[str, Any]) -> str:
             elif ps.get("error"):
                 lines.append(f"- **PageSpeed:** failed — {ps.get('error')}")
 
-        if excerpt:
-            clip = excerpt[:700] + ("…" if len(excerpt) > 700 else "")
-            lines.append(f"- **Excerpt:** > {clip}")
+        lines.extend(content_lines)
         lines.append("")
 
     lines.append("---")
