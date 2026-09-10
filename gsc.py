@@ -160,6 +160,45 @@ def get_page_metrics() -> list[dict]:
     return [{"page": r["keys"][0], **_row_metrics(r)} for r in rows]
 
 
+def get_page_decay(window_days: int | None = None) -> dict[str, float]:
+    """
+    Impression change per page: recent window vs the window before it.
+
+    Both windows are short and adjacent so they sit inside Search Console's
+    ~16-month retention. Comparing DATE_RANGE_DAYS against the equivalent
+    span before it reaches ~2 years back and returns nothing.
+
+    Returns {page_url: fractional change}, negative meaning decline.
+    """
+    window = int(window_days or getattr(config, "DECAY_WINDOW_DAYS", 90))
+    anchor = date.today() - timedelta(days=3)
+    cur_start = anchor - timedelta(days=window)
+    prev_start = cur_start - timedelta(days=window)
+
+    def _impressions(start: date, end: date, label: str) -> dict[str, float]:
+        rows = _query_all(
+            {
+                "startDate": start.isoformat(),
+                "endDate": end.isoformat(),
+                "dimensions": ["page"],
+                "rowLimit": _API_MAX_ROWS,
+                "dataState": "final",
+            },
+            label=label,
+        )
+        return {r["keys"][0]: float(r.get("impressions") or 0) for r in rows}
+
+    current = _impressions(cur_start, anchor, "decay (recent)")
+    previous = _impressions(prev_start, cur_start, "decay (preceding)")
+
+    out: dict[str, float] = {}
+    for page, prior in previous.items():
+        if prior <= 0:
+            continue
+        out[page] = (current.get(page, 0.0) - prior) / prior
+    return out
+
+
 def get_page_queries(page_url: str, limit: int = 50) -> list[dict]:
     start, end = _date_range()
     rows = _query(

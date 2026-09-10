@@ -194,10 +194,13 @@ def _write_page_snapshots(results: list[dict], out_dir: Path) -> int:
     return written
 
 
-def collect_worst_posts(args: argparse.Namespace) -> list[dict]:
+def collect_worst_posts(args: argparse.Namespace) -> dict:
     if args.demo:
         log.warning("DEMO mode: synthetic GSC metrics (not production).")
-        return _demo_low_performers(config.MAX_POSTS_TO_ANALYZE)
+        return {
+            "selected": _demo_low_performers(config.MAX_POSTS_TO_ANALYZE),
+            "deferred": [], "edited": [], "total_eligible": 0,
+        }
 
     # WordPress + RankMath first (drives improvable-first prioritization)
     log.info("Stage 0 — WordPress catalog + RankMath scores …")
@@ -235,24 +238,34 @@ def collect_worst_posts(args: argparse.Namespace) -> list[dict]:
 
     log.info("  %d pages found in Search Console.", len(page_metrics))
 
+    # No flat-cooldown exclusion here. Per-page defer_until supersedes it, and
+    # excluding pages this early hid them from the backlog — the one thing the
+    # backlog exists to show.
     if args.no_cooldown:
-        excluded: set[str] = set()
-        log.info("  Cooldown disabled (--no-cooldown).")
-    else:
-        excluded = db.cooldown_urls(page_metrics, config.COOLDOWN_DAYS)
+        log.info("  Backoff disabled (--no-cooldown).")
+
+    decay: dict[str, float] = {}
+    try:
+        decay = gsc.get_page_decay()
+        falling = sum(1 for v in decay.values() if v < 0)
         log.info(
-            "  %d page(s) skipped (within %d-day cooldown).",
-            len(excluded),
-            config.COOLDOWN_DAYS,
+            "  Decay over %dd windows: %d page(s) tracked, %d falling.",
+            config.DECAY_WINDOW_DAYS, len(decay), falling,
         )
+    except Exception as exc:
+        log.warning("  Decay pull failed (continuing without it): %s", exc)
 
     log.info(
-        "Prioritizing improvable posts (RankMath tiers under %s, then GSC) cap=%d …",
-        config.RANKMATH_SKIP_SCORE,
+        "Ranking by neglected under-performance (demand floor %d impressions) cap=%d …",
+        config.MIN_IMPRESSIONS,
         config.MAX_POSTS_TO_ANALYZE,
     )
-    return analyzer.identify_low_performers(
-        page_metrics, excluded_urls=excluded, wp_posts=wp_posts
+    return analyzer.select_pages(
+        page_metrics,
+        wp_posts=wp_posts,
+        decay=decay,
+        page_states=db.get_all_states(),
+        respect_defer=not args.no_cooldown,
     )
 
 
@@ -277,12 +290,38 @@ def main(argv: list[str] | None = None) -> None:
         config.local_llm_label(),
     )
 
-    low_performers = collect_worst_posts(args)
+    selection = collect_worst_posts(args)
+    low_performers = selection["selected"]
+    deferred = selection.get("deferred") or []
+    edited = selection.get("edited") or []
+
+    # Record edits before anything else: the human acted, so reset that page's
+    # backoff and let it rest while Google reprocesses.
+    for item in edited:
+        db.mark_edited(item["page"], item["modified"])
+
     if not low_performers:
-        log.info(
-            "No eligible low-performing posts found. "
-            "Try --no-cooldown, lower MIN_IMPRESSIONS, or raise DATE_RANGE_DAYS."
-        )
+        if deferred:
+            # The queue is resting, not empty. Say so and still write the
+            # backlog — an invisible backlog is the thing this feature exists
+            # to prevent.
+            nxt = min(d.get("defer_until") or "" for d in deferred)
+            log.info(
+                "Nothing due: all %d eligible page(s) are resting. "
+                "Next returns %s. Use --no-cooldown to override.",
+                len(deferred), nxt,
+            )
+            payload = briefing.build_briefing_payload(
+                [], site=config.GSC_SITE_URL,
+                deferred=deferred, total_eligible=selection.get("total_eligible") or 0,
+            )
+            _write_text(report_md, briefing.briefing_to_markdown(payload))
+            log.info("  Backlog written: %s", report_md.resolve())
+        else:
+            log.info(
+                "No eligible low-performing posts found. "
+                "Try --no-cooldown, lower MIN_IMPRESSIONS, or raise DATE_RANGE_DAYS."
+            )
         sys.exit(0)
 
     log.info("Found %d post(s) to package for Claude (improvable-first).", len(low_performers))
@@ -298,6 +337,13 @@ def main(argv: list[str] | None = None) -> None:
             int(m["clicks"]),
             m["position"],
             m.get("wp_title") or m["page"],
+        )
+        log.info(
+            "        ~%.0f clicks/yr missed · neglect x%.2f%s · seen %dx",
+            m.get("missed_clicks") or 0,
+            m.get("neglect_multiplier") or 1.0,
+            (f" · stale {m['days_stale']/365:.1f}y" if m.get("days_stale") else ""),
+            m.get("times_suggested") or 0,
         )
 
     # ── Stage 2: sitewide GSC context (once) ─────────────────────────────────
@@ -328,7 +374,7 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     results: list[dict] = []
-    pending_state: list[tuple[str, dict]] = []
+    pending_state: list[tuple[str, dict, str | None]] = []
     for i, metrics in enumerate(low_performers, 1):
         url = metrics["page"]
         log.info("[%d/%d] %s", i, len(low_performers), url)
@@ -411,7 +457,7 @@ def main(argv: list[str] | None = None) -> None:
             # Defer the cooldown write until the report is actually written,
             # so a crash mid-run doesn't put pages into cooldown with no
             # delivered report.
-            pending_state.append((url, dict(metrics)))
+            pending_state.append((url, dict(metrics), post.get("modified")))
 
         except RuntimeError:
             raise
@@ -507,14 +553,22 @@ def main(argv: list[str] | None = None) -> None:
         keyword_planner=planner_data,
         bing=bing_data,
         pagespeed=pagespeed_data,
+        deferred=deferred,
+        total_eligible=selection.get("total_eligible") or 0,
     )
     _write_text(briefing_json, briefing.briefing_to_json(payload))
     _write_text(report_md, briefing.briefing_to_markdown(payload))
     report.build_report(results, output_path=str(report_html))
 
     # Report is on disk — now record cooldown state for the pages it covers.
-    for state_url, state_metrics in pending_state:
-        db.save_page_state(state_url, state_metrics, str(report_md))
+    for state_url, state_metrics, state_modified in pending_state:
+        db.save_page_state(
+            state_url,
+            state_metrics,
+            str(report_md),
+            wp_modified=state_modified,
+            times_suggested=(state_metrics.get("times_suggested") or 0) + 1,
+        )
 
     log.info("Done. %d page(s) written for Claude handoff:", len(results))
     log.info("  Markdown (paste into Claude): %s", report_md.resolve())

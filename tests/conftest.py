@@ -42,6 +42,15 @@ _DEFAULTS = {
          "terms", "terms-of-service"}
     ),
     "SKIP_SLUG_SUBSTRINGS": ("privacy-policy", "cookie", "terms-of"),
+    # Neglect / demand scoring
+    "NEGLECT_FULL_DAYS": 730,
+    "NEGLECT_MAX_MULTIPLIER": 3.0,
+    "TARGET_POSITION": 5.0,
+    "DECAY_WINDOW_DAYS": 90,
+    "INCLUDE_ZERO_TRAFFIC_PAGES": False,
+    # Backoff
+    "BACKOFF_DAYS": (30, 60, 90, 180),
+    "EDIT_COOLDOWN_DAYS": 90,
 }
 
 

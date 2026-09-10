@@ -217,6 +217,8 @@ def build_briefing_payload(
     keyword_planner: dict[str, Any] | None = None,
     bing: dict[str, Any] | None = None,
     pagespeed: dict[str, Any] | None = None,
+    deferred: list[dict] | None = None,
+    total_eligible: int = 0,
 ) -> dict[str, Any]:
     posts = []
     for r in results:
@@ -286,6 +288,11 @@ def build_briefing_payload(
         "bing": bing or {},
         "pagespeed": pagespeed or {},
         "posts": posts,
+        "backlog": {
+            "deferred": deferred or [],
+            "shown": len(posts),
+            "eligible_now": total_eligible,
+        },
         "data_limits": {
             "gsc": "Owned performance only — not market volume or SERP competitors",
             "keyword_planner": "Volume/competition when Ads API configured",
@@ -717,6 +724,31 @@ def briefing_to_markdown(briefing: dict[str, Any]) -> str:
                 lines.append(f"- **PageSpeed:** failed — {ps.get('error')}")
 
         lines.extend(content_lines)
+        lines.append("")
+
+    backlog = briefing.get("backlog") or {}
+    waiting = backlog.get("deferred") or []
+    if waiting:
+        lines.extend([
+            "---",
+            "",
+            f"## Backlog — {len(waiting)} page(s) waiting, {backlog.get('shown', 0)} shown",
+            "",
+            "Deferred, not dropped. A page you did not get to is a page you had "
+            "no capacity for, so it returns with its priority intact. Nothing "
+            "here needs action now — it is shown so the queue stays visible.",
+            "",
+            "| Page | Seen | Returns |",
+            "|------|-----:|---------|",
+        ])
+        for d in waiting[:25]:
+            title = (d.get("wp_title") or d.get("page") or "")[:52].replace("|", "/")
+            lines.append(
+                f"| {title} | {d.get('times_suggested') or 0}x | "
+                f"{d.get('defer_until') or '—'} |"
+            )
+        if len(waiting) > 25:
+            lines.append(f"| _…and {len(waiting) - 25} more_ | | |")
         lines.append("")
 
     lines.append("---")

@@ -43,13 +43,48 @@ LLM_TIMEOUT_SECONDS = int(os.getenv("LLM_TIMEOUT_SECONDS", "600"))
 DATE_RANGE_DAYS = int(
     os.getenv("DATE_RANGE_DAYS", os.getenv("DAYS_BACK", "365"))
 )
-MIN_IMPRESSIONS = int(os.getenv("MIN_IMPRESSIONS", "1"))
+# Demand floor. Raised from 1: at 1, anything with a single impression
+# qualifies, which is how site furniture reached the top of the queue.
+MIN_IMPRESSIONS = int(os.getenv("MIN_IMPRESSIONS", "10"))
 MAX_CTR = float(os.getenv("MAX_CTR", "0.05"))
 MAX_POSITION = float(os.getenv("MAX_POSITION", "20"))
 MAX_POSTS_TO_ANALYZE = int(os.getenv("MAX_POSTS_TO_ANALYZE", "10"))
 
 COOLDOWN_DAYS = int(os.getenv("COOLDOWN_DAYS", "60"))
 REPORTS_DIR = os.getenv("REPORTS_DIR", "reports")
+
+# ─── Backoff — a deferred page always returns ────────────────────────────────
+# A page suggested but not edited is a page you had no capacity for, not one
+# you rejected. Each unedited suggestion pushes its eligibility window out;
+# the final value is a CAP so backoff never becomes silent deletion. Priority
+# score is untouched while it waits — passing on a page does not make it less
+# broken.
+BACKOFF_DAYS = tuple(
+    int(x) for x in _csv_env("BACKOFF_DAYS", ("30", "60", "90", "180"))
+) or (30, 60, 90, 180)
+
+# After a real edit, hold the page long enough for Google to reprocess it.
+# Judging a fix before then measures nothing.
+EDIT_COOLDOWN_DAYS = int(os.getenv("EDIT_COOLDOWN_DAYS", "90"))
+
+# ─── Priority — "most neglected under-performing page" ───────────────────────
+# Underperformance requires demand: a page with no impressions is undiscovered,
+# not underperforming, and that is a different job. This floor is what keeps
+# site furniture (support, booking, bio pages) out without a slug blocklist.
+# Neglect multiplier grows with time since the page was last edited.
+NEGLECT_FULL_DAYS = int(os.getenv("NEGLECT_FULL_DAYS", "730"))
+NEGLECT_MAX_MULTIPLIER = float(os.getenv("NEGLECT_MAX_MULTIPLIER", "3.0"))
+# Decay is measured over its OWN short window, not DATE_RANGE_DAYS. Search
+# Console retains ~16 months, so comparing a 365-day window against the 365
+# days before it reaches ~2 years back and returns nothing.
+DECAY_WINDOW_DAYS = int(os.getenv("DECAY_WINDOW_DAYS", "90"))
+# Position we treat as "captured" when sizing ranking upside.
+TARGET_POSITION = float(os.getenv("TARGET_POSITION", "5"))
+# Include pages with no Search Console traffic at all (off: they have no
+# demand to under-serve).
+INCLUDE_ZERO_TRAFFIC_PAGES = os.getenv(
+    "INCLUDE_ZERO_TRAFFIC_PAGES", "0"
+).strip().lower() in ("1", "true", "yes", "on")
 
 # Save each selected page's WordPress HTML to reports/pages_YYYY-MM-DD/.
 # The briefing sends the model to the live URL; this is what you paste in

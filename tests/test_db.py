@@ -22,7 +22,8 @@ def seed(path, url, days_ago):
     when = (date.today() - timedelta(days=days_ago)).isoformat()
     with sqlite3.connect(str(path)) as conn:
         conn.execute(
-            "INSERT OR REPLACE INTO page_history VALUES (?,?,?,?)",
+            "INSERT OR REPLACE INTO page_history "
+            "(url, last_analyzed, last_metrics, report_file) VALUES (?,?,?,?)",
             (url, when, json.dumps({"clicks": 1}), "r.md"),
         )
 

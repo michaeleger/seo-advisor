@@ -179,6 +179,8 @@ def _to_post_dict(p: dict) -> dict:
         "id": p.get("id"),
         "title": title,
         "url": p.get("link") or "",
+        # Drives the neglect multiplier: how long since anyone touched this.
+        "modified": p.get("modified") or "",
         "content_plain": _strip_html(content_html)[:3000],
         # Kept so the run can drop a snapshot beside the report. The briefing
         # itself never carries article text — see content_structure().
@@ -196,7 +198,7 @@ def _fetch_by_slug(endpoint: str, slug: str) -> dict | None:
         f"{base}/wp-json/wp/v2/{endpoint}",
         params={
             "slug": slug,
-            "_fields": "id,title,content,link,meta,type,slug,rankmath",
+            "_fields": "id,title,content,link,meta,type,slug,rankmath,modified",
             "per_page": 1,
         },
     )
@@ -226,7 +228,7 @@ def get_post_content(page_url: str) -> dict | None:
                 f"{base}/wp-json/wp/v2/{endpoint}",
                 params={
                     "search": q,
-                    "_fields": "id,title,content,link,meta,type,slug,rankmath",
+                    "_fields": "id,title,content,link,meta,type,slug,rankmath,modified",
                     "per_page": 10,
                 },
             )
@@ -464,7 +466,7 @@ def list_content_with_rankmath(
                     "per_page": per_page,
                     "page": page,
                     "status": "publish",
-                    "_fields": "id,title,content,link,meta,type,slug,rankmath",
+                    "_fields": "id,title,content,link,meta,type,slug,rankmath,modified",
                     "orderby": "modified",
                     "order": "desc",
                 },

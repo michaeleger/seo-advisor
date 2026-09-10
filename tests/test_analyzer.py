@@ -115,18 +115,27 @@ class TestRankMathOrdering:
 
         assert pages(out) == [below]
 
-    def test_unscored_pages_sort_after_scored_ones(self, gsc_row, wp_post):
-        scored, unscored = f"{BASE}/scored/", f"{BASE}/unscored/"
+    def test_opportunity_size_outweighs_a_missing_score(self, gsc_row, wp_post):
+        """
+        Rank Math score is a multiplier, not a sort key. A page leaking far
+        more traffic wins even with no score — the old tier sort put score
+        first, which is how a bio page scoring 9 outranked every real article.
+        """
+        scored, unscored = f"{BASE}/scored-small/", f"{BASE}/unscored-huge/"
         rows = [
-            gsc_row(unscored, impressions=9000, position=30.0),
-            gsc_row(scored, impressions=100, position=5.0),
+            gsc_row(unscored, impressions=9000, ctr=0.001, position=30.0),
+            gsc_row(scored, impressions=100, ctr=0.001, position=5.0),
         ]
-        posts = [wp_post(scored, score=45)]
+        out = analyzer.identify_low_performers(rows, wp_posts=[wp_post(scored, score=45)])
+        assert pages(out) == [unscored, scored]
 
+    def test_score_breaks_the_tie_when_opportunity_matches(self, gsc_row, wp_post):
+        worse, better = f"{BASE}/worse-score/", f"{BASE}/better-score/"
+        rows = [gsc_row(better, impressions=1000, ctr=0.001, position=12.0),
+                gsc_row(worse, impressions=1000, ctr=0.001, position=12.0)]
+        posts = [wp_post(better, score=70), wp_post(worse, score=15)]
         out = analyzer.identify_low_performers(rows, wp_posts=posts)
-
-        # despite far higher GSC opportunity, the unscored page ranks lower
-        assert pages(out) == [scored, unscored]
+        assert pages(out) == [worse, better]
 
     def test_falls_back_to_gsc_ranking_when_no_scores_exist(self, gsc_row):
         weak, strong = f"{BASE}/weak/", f"{BASE}/strong/"
@@ -140,41 +149,52 @@ class TestRankMathOrdering:
 
 # ── WordPress-only rows ──────────────────────────────────────────────────────
 
-class TestWordPressOnlyRows:
-    def test_low_score_page_with_no_gsc_data_still_enters_the_queue(self, wp_post):
-        url = f"{BASE}/brand-new-post/"
-        out = analyzer.identify_low_performers([], wp_posts=[wp_post(url, score=15)])
+class TestDemandGate:
+    """
+    Underperformance requires demand. A page with no impressions is
+    undiscovered, not under-performing — a different job. This gate is what
+    keeps site furniture out without maintaining a slug blocklist.
+    """
 
-        assert pages(out) == [url]
-        assert out[0]["impressions"] == 0
-        assert any("no GSC traffic" in r for r in out[0]["reasons"])
-
-    def test_strong_score_with_no_gsc_data_is_not_queued(self, wp_post):
+    def test_zero_traffic_page_is_not_queued_however_bad_its_score(self, wp_post):
         out = analyzer.identify_low_performers(
-            [], wp_posts=[wp_post(f"{BASE}/already-good/", score=95)]
+            [], wp_posts=[wp_post(f"{BASE}/brand-new-post/", score=9)]
         )
         assert out == []
 
-    def test_unscored_page_with_no_gsc_data_is_not_queued(self, wp_post):
-        """No score and no traffic means no evidence to act on."""
-        out = analyzer.identify_low_performers(
-            [], wp_posts=[wp_post(f"{BASE}/unknown/", score=None)]
-        )
-        assert out == []
-
-
-# ── Thin-traffic filtering ───────────────────────────────────────────────────
-
-class TestThinTrafficFilter:
-    def test_thin_row_without_a_score_is_dropped(self, gsc_row, pinned_config):
-        rows = [gsc_row(f"{BASE}/thin/", impressions=pinned_config.MIN_IMPRESSIONS - 1)]
-        assert analyzer.identify_low_performers(rows, wp_posts=[]) == []
-
-    def test_thin_row_with_a_low_score_is_kept(self, gsc_row, wp_post, pinned_config):
-        url = f"{BASE}/thin-but-bad/"
+    def test_thin_row_is_dropped_even_with_a_terrible_score(
+        self, gsc_row, wp_post, pinned_config
+    ):
+        """
+        Regression: a Rank Math score of 9 used to override the demand floor,
+        which is how a bio page with 2 impressions reached the top of the queue.
+        """
+        url = f"{BASE}/bio-page/"
         rows = [gsc_row(url, impressions=pinned_config.MIN_IMPRESSIONS - 1)]
-        out = analyzer.identify_low_performers(rows, wp_posts=[wp_post(url, score=15)])
+        out = analyzer.identify_low_performers(rows, wp_posts=[wp_post(url, score=9)])
+        assert out == []
+
+    def test_row_at_the_floor_is_kept(self, gsc_row, wp_post, pinned_config):
+        url = f"{BASE}/real-article/"
+        rows = [gsc_row(url, impressions=pinned_config.MIN_IMPRESSIONS,
+                        ctr=0.001, position=18.0)]
+        out = analyzer.identify_low_performers(rows, wp_posts=[wp_post(url, score=40)])
         assert pages(out) == [url]
+
+    def test_zero_traffic_pages_can_be_opted_back_in(
+        self, wp_post, pinned_config, monkeypatch
+    ):
+        monkeypatch.setattr(pinned_config, "INCLUDE_ZERO_TRAFFIC_PAGES", True)
+        url = f"{BASE}/brand-new-post/"
+        out = analyzer.identify_low_performers([], wp_posts=[wp_post(url, score=9)])
+        assert pages(out) == [url]
+
+    def test_strong_score_is_still_skipped(self, gsc_row, wp_post):
+        url = f"{BASE}/already-good/"
+        out = analyzer.identify_low_performers(
+            [gsc_row(url, impressions=5000)], wp_posts=[wp_post(url, score=95)]
+        )
+        assert out == []
 
 
 # ── Cooldown and capping ─────────────────────────────────────────────────────
