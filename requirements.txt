@@ -1,6 +1,13 @@
-anthropic>=0.25.0
+# Google Search Console (OAuth) — free API
 google-api-python-client>=2.100.0
 google-auth>=2.23.0
 google-auth-oauthlib>=1.0.0
+
+# Google Ads Keyword Planner (optional — enable when Ads account is ready)
+google-ads>=25.0.0
+
+# HTTP + env
 requests>=2.31.0
 python-dotenv>=1.0.0
+
+# No Anthropic cloud SDK — Claude is manual handoff outside this app.

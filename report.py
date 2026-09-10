@@ -215,7 +215,7 @@ def _post_section(idx: int, metrics: dict, post: dict, analysis: dict,
         {_reco_section(analysis.get('content_recommendations', []))}
         """
     else:
-        body = f'{rm_panel}<p class="error">AI analysis unavailable for this post. Check your ANTHROPIC_API_KEY.</p>'
+        body = f'{rm_panel}<p class="error">Local keyword analysis unavailable for this post. Check that Ollama is running.</p>'
 
     reasons_html = _reason_tags(metrics.get("reasons", []))
 
