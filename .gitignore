@@ -33,6 +33,8 @@ reports/*.json
 # Keep example HTML out of force-push accidents; reports are regenerable
 reports/seo_report_*.html
 reports/llm_raw_fail_*.txt
+# Per-run page snapshots (copies of live site content)
+reports/pages_*/
 
 # OS / editor
 .DS_Store

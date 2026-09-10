@@ -180,6 +180,9 @@ def _to_post_dict(p: dict) -> dict:
         "title": title,
         "url": p.get("link") or "",
         "content_plain": _strip_html(content_html)[:3000],
+        # Kept so the run can drop a snapshot beside the report. The briefing
+        # itself never carries article text — see content_structure().
+        "content_html": content_html,
         "content": content_structure(content_html),
         "rankmath": rankmath,
         "type": p.get("type") or "post",

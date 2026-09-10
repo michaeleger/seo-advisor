@@ -35,8 +35,9 @@ duplicate.
 IF YOU CANNOT OPEN A PAGE, STOP AND SAY SO for that page. Do not reconstruct
 the article from the measurements below — a heading outline and a word count
 are not the article, and rewriting from them means inventing its substance.
-Say which URL you could not read and move on to the next page; the content
-can be pulled over the WordPress REST API and supplied to you.
+Name the page's "Local snapshot" path and ask for it, then move on to the
+next page. A copy of every page's markup was saved when this report was
+generated; it takes one paste to hand you.
 
 ── What this briefing is ───────────────────────────────────────────────────
 It gives you MEASUREMENTS and DIAGNOSTICS about each page as it exists today:
@@ -265,6 +266,7 @@ def build_briefing_payload(
             if analysis
             else None,
             "content_structure": post.get("content") or {},
+            "snapshot_path": r.get("snapshot_path"),
         })
 
     return {
@@ -333,9 +335,10 @@ def briefing_to_markdown(briefing: dict[str, Any]) -> str:
         "briefing supplies measurements and diagnostics only — they are "
         "observations about each page, not a specification to write against.",
         "",
-        "If the model reports it could not open a page, pull that page over "
-        "the WordPress REST API (`wp.py`) and paste it in. It is told to "
-        "stop rather than rewrite a page it has not read.",
+        "If the model reports it could not open a page, paste in that page's "
+        "**Local snapshot** file — saved beside this report when it was "
+        "generated. The model is told to stop and ask rather than rewrite a "
+        "page it has not read.",
         "",
         "### Selection order",
         "1. Identify worst/improvable pages (RankMath tiers + GSC).",
@@ -587,6 +590,11 @@ def briefing_to_markdown(briefing: dict[str, Any]) -> str:
         rm = p.get("rankmath") or {}
         lines.append(f"### {i}. {p.get('title')}")
         lines.append(f"- **URL:** {p.get('url')}")
+        if p.get("snapshot_path"):
+            lines.append(
+                f"- **Local snapshot (ask for it if the URL won't open):** "
+                f"`{p['snapshot_path']}`"
+            )
         score = rp.get("seo_score")
         if score is None:
             score = rm.get("seo_score")
@@ -660,13 +668,6 @@ def briefing_to_markdown(briefing: dict[str, Any]) -> str:
                 )
         else:
             lines.append("- **Top GSC queries:** (none)")
-
-        rm = p.get("rankmath") or {}
-        if any(rm.values()):
-            lines.append(
-                f"- **RankMath:** focus={rm.get('focus_keyword') or 'n/a'}, "
-                f"score={rm.get('seo_score') if rm.get('seo_score') is not None else 'n/a'}"
-            )
 
         if kw:
             lines.append(

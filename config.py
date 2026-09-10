@@ -43,6 +43,16 @@ MAX_POSTS_TO_ANALYZE = int(os.getenv("MAX_POSTS_TO_ANALYZE", "10"))
 COOLDOWN_DAYS = int(os.getenv("COOLDOWN_DAYS", "60"))
 REPORTS_DIR = os.getenv("REPORTS_DIR", "reports")
 
+# Save each selected page's WordPress HTML to reports/pages_YYYY-MM-DD/.
+# The briefing sends the model to the live URL; this is what you paste in
+# when it reports that it could not open one.
+SAVE_PAGE_SNAPSHOTS = os.getenv("SAVE_PAGE_SNAPSHOTS", "1").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+
 USE_LOCAL_LLM = os.getenv("USE_LOCAL_LLM", "0").strip().lower() in (
     "1",
     "true",

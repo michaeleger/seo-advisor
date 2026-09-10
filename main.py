@@ -16,9 +16,11 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import re
 import sys
 from datetime import date
 from pathlib import Path
+from urllib.parse import urlparse
 
 import analyzer
 import bing_webmaster
@@ -152,6 +154,46 @@ def _write_text(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def _snapshot_name(post: dict, page_url: str) -> str:
+    slug = (post.get("slug") or "").strip()
+    if not slug:
+        slug = urlparse(page_url or "").path.rstrip("/").split("/")[-1]
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", slug).strip("-.")[:80]
+    return slug or f"post-{post.get('id') or 'unknown'}"
+
+
+def _write_page_snapshots(results: list[dict], out_dir: Path) -> int:
+    """
+    Save each selected page's WordPress HTML beside the report.
+
+    The briefing carries measurements, not article text — the model is told to
+    read the live page. When it reports that it could not, this is the file to
+    paste in, so the content is one step away instead of re-embedded in every
+    report.
+    """
+    written = 0
+    for r in results:
+        post = r.get("post") or {}
+        html = (post.get("content_html") or "").strip()
+        if not html:
+            continue
+        page_url = post.get("url") or (r.get("metrics") or {}).get("page") or ""
+        path = out_dir / f"{_snapshot_name(post, page_url)}.html"
+        header = (
+            "<!-- SEO Advisor page snapshot\n"
+            f"     Title:    {post.get('title') or '(untitled)'}\n"
+            f"     URL:      {page_url}\n"
+            f"     Post ID:  {post.get('id')}\n"
+            f"     Captured: {date.today().isoformat()}\n"
+            "     Source:   WordPress REST content.rendered\n"
+            "-->\n"
+        )
+        _write_text(path, header + html)
+        r["snapshot_path"] = str(path)
+        written += 1
+    return written
+
+
 def collect_worst_posts(args: argparse.Namespace) -> list[dict]:
     if args.demo:
         log.warning("DEMO mode: synthetic GSC metrics (not production).")
@@ -227,6 +269,7 @@ def main(argv: list[str] | None = None) -> None:
     report_md = Path(config.REPORTS_DIR) / f"seo_report_{today}.md"
     report_html = Path(config.REPORTS_DIR) / f"seo_report_{today}.html"
     briefing_json = Path(config.REPORTS_DIR) / f"seo_briefing_{today}.json"
+    snapshot_dir = Path(config.REPORTS_DIR) / f"pages_{today}"
 
     log.info(
         "SEO Advisor — worst %d pages → Claude handoff (%s)",
@@ -448,6 +491,14 @@ def main(argv: list[str] | None = None) -> None:
     elif args.demo:
         pagespeed_data = {"enabled": False, "status": "skipped (demo)", "pages": {}}
 
+    # ── Page snapshots (fallback when the model can't open a live URL) ───────
+    if config.SAVE_PAGE_SNAPSHOTS:
+        n_snap = _write_page_snapshots(results, snapshot_dir)
+        if n_snap:
+            log.info("Saved %d page snapshot(s) → %s", n_snap, snapshot_dir)
+        else:
+            log.info("No page snapshots written (no WordPress HTML retrieved).")
+
     # ── Write handoff artifacts (you paste MD into Claude) ───────────────────
     payload = briefing.build_briefing_payload(
         results,
@@ -469,6 +520,8 @@ def main(argv: list[str] | None = None) -> None:
     log.info("  Markdown (paste into Claude): %s", report_md.resolve())
     log.info("  HTML (browser view):          %s", report_html.resolve())
     log.info("  JSON (optional):              %s", briefing_json.resolve())
+    if config.SAVE_PAGE_SNAPSHOTS and snapshot_dir.exists():
+        log.info("  Page snapshots (on request):  %s", snapshot_dir.resolve())
     log.info(
         "Next: open the .md file → copy all → paste into Claude."
     )
