@@ -1,4 +1,5 @@
 """Generate a self-contained HTML SEO report."""
+import html
 from datetime import date
 from typing import Any
 
@@ -186,8 +187,89 @@ def _reco_section(recos: list[dict]) -> str:
     </div>"""
 
 
-def _post_section(idx: int, metrics: dict, post: dict, analysis: dict,
-                  prev_metrics: dict | None = None) -> str:
+def _queries_section(queries: list[dict] | None) -> str:
+    queries = queries or []
+    if not queries:
+        return ""
+    rows = "".join(
+        f"<tr>"
+        f'<td><code class="kw">{html.escape(str(q.get("query") or ""))}</code></td>'
+        f"<td>{int(q.get('impressions') or 0)}</td>"
+        f"<td>{int(q.get('clicks') or 0)}</td>"
+        f"<td>{float(q.get('ctr') or 0) * 100:.1f}%</td>"
+        f"<td>{float(q.get('position') or 0):.1f}</td>"
+        f"</tr>"
+        for q in queries[:15]
+    )
+    return f"""
+    <div class="section-block">
+      <h4 class="section-heading">Top GSC Queries</h4>
+      <table>
+        <thead><tr><th>Query</th><th>Impr</th><th>Clicks</th><th>CTR</th><th>Pos</th></tr></thead>
+        <tbody>{rows}</tbody>
+      </table>
+    </div>"""
+
+
+def _pagespeed_section(ps: dict | None) -> str:
+    if not ps:
+        return ""
+    if not ps.get("ok"):
+        if ps.get("error"):
+            return (
+                '<div class="section-block"><h4 class="section-heading">PageSpeed</h4>'
+                f'<p class="muted">Scan failed: {html.escape(str(ps.get("error")))}</p></div>'
+            )
+        return ""
+
+    blocks = []
+    for strat, b in (ps.get("strategies") or {}).items():
+        sc = b.get("scores") or {}
+        pills = "".join(
+            f'<span class="placement">{lbl}: {val if val is not None else "&mdash;"}</span> '
+            for lbl, val in (
+                ("perf", sc.get("performance")),
+                ("a11y", sc.get("accessibility")),
+                ("best practices", sc.get("best_practices")),
+                ("seo", sc.get("seo")),
+            )
+        )
+        lab = (b.get("lab") or {}).get("core_metrics") or {}
+        lab_bits = ", ".join(
+            f"{mid.upper()} {lab[mid]['display_value']}"
+            for mid in ("lcp", "cls", "tbt", "fcp")
+            if lab.get(mid) and lab[mid].get("display_value")
+        )
+        lab_html = f'<p class="muted">Lab: {html.escape(lab_bits)}</p>' if lab_bits else ""
+        issues = (b.get("lab") or {}).get("html_relevant_issues") or []
+        issue_items = "".join(
+            f"<li>{html.escape(str(i.get('title') or i.get('id') or ''))}"
+            + (
+                f" &mdash; {html.escape(str(i.get('display_value')))}"
+                if i.get("display_value")
+                else ""
+            )
+            + "</li>"
+            for i in issues[:8]
+        )
+        issue_html = (
+            f'<ul class="reco-list">{issue_items}</ul>' if issue_items else ""
+        )
+        blocks.append(
+            f'<div style="margin-bottom:.7rem"><strong>{html.escape(str(strat))}</strong>'
+            f'<br>{pills}{lab_html}{issue_html}</div>'
+        )
+    return f"""
+    <div class="section-block">
+      <h4 class="section-heading">PageSpeed (selected-page scan)</h4>
+      {''.join(blocks)}
+    </div>"""
+
+
+def _post_section(idx: int, metrics: dict, post: dict, analysis: dict | None,
+                  prev_metrics: dict | None = None,
+                  queries: list[dict] | None = None,
+                  pagespeed: dict | None = None) -> str:
     ctr_warn = metrics["ctr"] < 0.05
     pos_warn = metrics["position"] > 20
     pm = prev_metrics
@@ -204,18 +286,30 @@ def _post_section(idx: int, metrics: dict, post: dict, analysis: dict,
     )
 
     rm_panel = _rankmath_panel(post.get("rankmath", {}))
+    queries_block = _queries_section(queries)
+    pagespeed_block = _pagespeed_section(pagespeed)
 
     if analysis:
+        summary = analysis.get("summary") or ""
+        summary_html = f'<div class="summary-box">{html.escape(summary)}</div>' if summary else ""
         body = f"""
         {rm_panel}
-        <div class="summary-box">{analysis['summary']}</div>
+        {summary_html}
         {_keyword_opportunities_section(analysis)}
         {_title_section(analysis.get('title_suggestions', []))}
         {_phrases_section(analysis.get('phrases_to_add', []))}
         {_reco_section(analysis.get('content_recommendations', []))}
+        {queries_block}
+        {pagespeed_block}
         """
     else:
-        body = f'{rm_panel}<p class="error">Local keyword analysis unavailable for this post. Check that Ollama is running.</p>'
+        body = f"{rm_panel}{queries_block}{pagespeed_block}"
+        rm_has_data = any((post.get("rankmath") or {}).values())
+        if not (queries_block or pagespeed_block or rm_has_data):
+            body += (
+                '<p class="hint">No WordPress / GSC / PageSpeed enrichment for '
+                "this page yet — see the Markdown briefing for full context.</p>"
+            )
 
     reasons_html = _reason_tags(metrics.get("reasons", []))
 
@@ -264,15 +358,43 @@ def build_report(results: list[dict], output_path: str = "seo_report.html") -> s
         for i, r in enumerate(results)
     )
     post_sections = "".join(
-        _post_section(i + 1, r["metrics"], r["post"], r["analysis"], r.get("prev_metrics"))
+        _post_section(
+            i + 1, r["metrics"], r["post"], r.get("analysis"),
+            r.get("prev_metrics"), r.get("queries"), r.get("pagespeed"),
+        )
         for i, r in enumerate(results)
     )
 
-    analyzed = sum(1 for r in results if r["analysis"])
-    site = results[0]["post"]["url"].split("/")[2] if results else "your site"
+    any_analysis = any(r.get("analysis") for r in results)
+    analyzed = sum(1 for r in results if r.get("analysis"))
     total_kw = sum(
         len(r["analysis"].get("target_keywords", []))
-        for r in results if r["analysis"]
+        for r in results if r.get("analysis")
+    )
+
+    first_url = (results[0]["post"].get("url") or "") if results else ""
+    _parts = first_url.split("/")
+    site = _parts[2] if len(_parts) > 2 else "your site"
+
+    ai_stats = ""
+    if any_analysis:
+        ai_stats = f"""
+    <div class="stat">
+      <div class="stat-val">{analyzed}</div>
+      <div class="stat-label">AI-Analyzed</div>
+    </div>
+    <div class="stat">
+      <div class="stat-val">{total_kw}</div>
+      <div class="stat-label">Keywords Found</div>
+    </div>"""
+
+    expand_hint = (
+        "Click any post to expand keyword opportunities, title rewrites, "
+        "and content improvements."
+        if any_analysis
+        else "Click any post to expand RankMath status, top GSC queries, and "
+        "PageSpeed findings. Full keyword strategy lives in the Markdown "
+        "briefing (reports/seo_report_*.md)."
     )
 
     html = f"""<!DOCTYPE html>
@@ -522,14 +644,7 @@ def build_report(results: list[dict], output_path: str = "seo_report.html") -> s
       <div class="stat-val">{len(results)}</div>
       <div class="stat-label">Posts Flagged</div>
     </div>
-    <div class="stat">
-      <div class="stat-val">{analyzed}</div>
-      <div class="stat-label">AI-Analyzed</div>
-    </div>
-    <div class="stat">
-      <div class="stat-val">{total_kw}</div>
-      <div class="stat-label">Keywords Found</div>
-    </div>
+    {ai_stats}
     <div class="stat">
       <div class="stat-val">{sum(int(r['metrics']['impressions']) for r in results):,}</div>
       <div class="stat-label">Total Impressions</div>
@@ -553,7 +668,7 @@ def build_report(results: list[dict], output_path: str = "seo_report.html") -> s
   </table>
 
   <h2>Post-by-Post Analysis</h2>
-  <p class="hint">Click any post to expand the full AI recommendations including keyword opportunities, title rewrites, and content improvements.</p>
+  <p class="hint">{expand_hint}</p>
   {post_sections}
 </main>
 </body>
