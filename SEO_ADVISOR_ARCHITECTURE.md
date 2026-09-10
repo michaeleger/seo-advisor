@@ -73,35 +73,53 @@
 **Problem**: Large HTML body dumps exceed LLM chat context limits or cause cluttered responses.
 **Implemented**: `wp_client.content_structure()` summarizes the rendered HTML and
 `briefing.py` renders it per page:
-- Heading outline (H1–H6), total word count, first 300 / last 200 words
-  (short posts pass through whole).
-- Paragraph count and how many exceed 120 words; image count and how many
-  lack alt text; internal / external / external-dofollow link counts.
-- A **"Rank Math gaps"** line naming the rules the page currently fails.
+- Heading outline (H1–H6), total word count, and **the article verbatim**
+  (a rewrite driven by excerpts silently drops the middle).
+- Paragraph count and how many exceed Rank Math's long-paragraph threshold;
+  image count and how many lack alt text; internal / external /
+  external-dofollow link counts.
+- A **"Falls short of Rank Math's rubric"** line naming the plugin rules the
+  page currently misses, measurement first (see Improvement 2 revised).
 - Exact list of low-CTR GSC keywords for the page.
 - Specific Lighthouse accessibility / speed issues affecting HTML markup (e.g., missing alt text, non-descriptive link anchors, tap target spacing).
 
-### Improvement 2: Standardize Dual-Output Format for Grok & Claude
-Update the embedded prompt template in [briefing.py](file:///home/aiuser/projects/seo-advisor/briefing.py#L12-L45) to instruct Grok or Claude to return **two precise code blocks per page**:
+### ~~Improvement 2: Standardize Dual-Output Format for Grok & Claude~~
+~~Update the embedded prompt template to instruct Grok or Claude to return **two precise code blocks per page**.~~
 
-1. **Rank Math Metadata Block** (JSON format for instant review or paste-back):
-```json
-{
-  "post_id": 1234,
-  "url": "https://www.eagertobehealthy.com/example-post/",
-  "rank_math_focus_keyword": "primary keyword phrase",
-  "rank_math_title": "Optimized Title Tag (50-60 chars)",
-  "rank_math_description": "Compelling Meta Description with CTA (120-155 chars)",
-  "rank_math_secondary_keywords": ["keyword 2", "keyword 3"]
-}
-```
+> **Superseded.** We do **not** standardize the output format — pinning a
+> schema here is the same mistake as pinning a design system.
 
-2. **Updated HTML Content Block**:
-- Complete, publication-ready clean HTML incorporating improved headings, target keywords in the first 10% of body text, and fixed image alt tags.
+### Improvement 2 (revised): Delegate Format and Design Standards — ✅ DONE
+**Principle**: the payload format (HTML, metadata JSON, CSS, images) and every
+design decision belong to the **AI model**, formatted to whatever standards are
+current when the rewrite happens. Standards change; this repo must not freeze
+them.
 
-> **Status: pending.** The exact field names above are a placeholder. Both
-> blocks must match whatever `wp.py` consumes, so this prompt rewrite is
-> blocked until that script's expected input format is confirmed.
+**Scope**: the tool prompts a **rewrite and update** of each page — a complete,
+publication-ready replacement — not an SEO tweak list.
+
+The prompt in `briefing.py` therefore draws a hard line:
+
+| This repo supplies | The model decides |
+|---|---|
+| GSC / Bing / Planner metrics | Which artifacts to return, and their shape |
+| Rank Math score + rubric misses | Markup, semantics, accessibility, responsive behaviour |
+| PageSpeed lab + CrUX defects | Typography, layout, component structure |
+| Content measurements + the article verbatim | Image formats, sizing, art direction |
+
+It instructs the model to apply the standards current as of its own knowledge,
+and to override how the page is built today where the two conflict.
+
+**Constraints that remain real** (these are facts, not fashions): use only the
+briefing's data, preserve the article's factual substance, introduce no
+unsupported health claims, keep the URL unless flagged separately, and fix the
+causes of PageSpeed defects.
+
+**Rank Math thresholds** (`_RM_MIN_WORDS`, `_RM_LONG_PARAGRAPH_WORDS`) are the
+one exception, and they are quarantined: named constants, documented as the
+plugin's scoring rubric, rendered as `"707 words (Rank Math wants ≥600)"` so
+the measurement leads and the threshold is attributed. A rubric change dates
+the label, not the fact.
 
 ### Improvement 3: Write-Back — Out of Scope (handled by `wp.py`)
 **Decision:** this repo does **not** build a paste-back importer. An earlier
@@ -161,9 +179,10 @@ The report generated for Grok/Claude chat specifically highlights which of these
 
 1. **Keep the zero-cost architecture**: Run data extraction locally via `./run.sh`.
 2. ✅ **Optimize `briefing.py`**: content structure (heading outline, word count,
-   link/image counts, opening + closing text) and a per-page "Rank Math gaps"
-   line now replace the truncated excerpt.
-3. ⏳ **Enhance Chat Handoff Prompt**: have Grok/Claude return a metadata block
-   plus rewritten HTML — **blocked on `wp.py`'s expected input format**.
+   link/image counts) plus the article verbatim and a per-page
+   "Falls short of Rank Math's rubric" line now replace the truncated excerpt.
+3. ✅ **Chat Handoff Prompt**: asks for a full page rewrite and delegates output
+   format and design standards to the model. Deliberately schema-free — the
+   payload shape is not pinned by this repo.
 4. ❌ **Write-back helper**: dropped. `wp.py` handles write-back outside this
    repo; nothing here writes to WordPress.
