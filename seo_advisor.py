@@ -79,7 +79,10 @@ def _build_user_prompt(metrics: dict, queries: list[dict], post: dict) -> str:
 
     rm = post.get("rankmath", {})
     rm_section = ""
-    if any(rm.values()):
+    # Not `any(rm.values())`: a Rank Math score of 0 is falsy but is the worst
+    # possible score, so that test hid the section on exactly the pages that
+    # most need it.
+    if any(v is not None and v != "" for v in rm.values()):
         score = f"{rm['seo_score']}/100" if rm.get("seo_score") is not None else "unknown"
         rm_section = f"""
 RANKMATH:

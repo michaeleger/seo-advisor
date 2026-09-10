@@ -1,10 +1,33 @@
 """Generate a self-contained HTML SEO report."""
 import html
 from datetime import date
-from typing import Any
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
+
+def _esc(value) -> str:
+    """
+    Escape a value for HTML interpolation.
+
+    Titles, focus keywords and Rank Math meta come from WordPress, and keyword
+    text can come from a local model — none of it is trusted markup. Beyond
+    injection, an unescaped `<` or `&` in an ordinary title ("Fasting < 16
+    hours") silently breaks the page.
+    """
+    return html.escape("" if value is None else str(value), quote=True)
+
+
+def _has_value(d: dict | None) -> bool:
+    """
+    True when a mapping holds any real value.
+
+    `any(d.values())` is wrong here: a Rank Math score of 0 is falsy but is
+    the worst possible score, i.e. exactly what this tool exists to surface.
+    """
+    if not d:
+        return False
+    return any(v is not None and v != "" for v in d.values())
+
 
 def _pct(v: float) -> str:
     return f"{v * 100:.1f}%"
@@ -30,7 +53,7 @@ def _metric_pill(label: str, value: str, warn: bool = False, delta: str = "") ->
 
 
 def _reason_tags(reasons: list[str]) -> str:
-    return " ".join(_badge(r, "#e74c3c") for r in reasons)
+    return " ".join(_badge(_esc(r), "#e74c3c") for r in reasons)
 
 
 def _delta_span(new_val: float, old_val: float | None, fmt: str = "+.0f", invert: bool = False) -> str:
@@ -64,8 +87,8 @@ def _keyword_opportunities_section(analysis: dict) -> str:
         intent_badge = f'<span class="badge" style="background:{color};font-size:.65rem">{intent}</span>'
         rows += (
             f"<tr>"
-            f'<td><code class="kw">{k["keyword"]}</code> {intent_badge}</td>'
-            f"<td>{k['rationale']}</td>"
+            f'<td><code class="kw">{_esc(k["keyword"])}</code> {intent_badge}</td>'
+            f"<td>{_esc(k['rationale'])}</td>"
             f"</tr>"
         )
 
@@ -79,7 +102,7 @@ def _keyword_opportunities_section(analysis: dict) -> str:
       <div class="section-label">Suggested Meta Description
         <span style="color:{color};font-size:.8rem;margin-left:.5rem">({char_count} chars)</span>
       </div>
-      <p class="meta-desc-text">{meta_desc}</p>
+      <p class="meta-desc-text">{_esc(meta_desc)}</p>
     </div>"""
 
     evergreen = analysis.get("is_evergreen")
@@ -89,7 +112,7 @@ def _keyword_opportunities_section(analysis: dict) -> str:
         label = "Evergreen content" if evergreen else "Time-sensitive content"
         rationale = analysis.get("evergreen_rationale", "")
         ev_color = "#27ae60" if evergreen else "#e67e22"
-        rationale_html = f' <span class="ev-note">— {rationale}</span>' if rationale else ""
+        rationale_html = f' <span class="ev-note">— {_esc(rationale)}</span>' if rationale else ""
         evergreen_html = (
             f'<div class="evergreen-tag" style="border-color:{ev_color};color:{ev_color}">'
             f'{icon} {label}{rationale_html}'
@@ -112,8 +135,8 @@ def _phrases_section(phrases: list[dict]) -> str:
     if not phrases:
         return ""
     rows = "".join(
-        f'<tr><td><em>&ldquo;{p["phrase"]}&rdquo;</em></td>'
-        f'<td><span class="placement">{p["placement"]}</span></td></tr>'
+        f'<tr><td><em>&ldquo;{_esc(p["phrase"])}&rdquo;</em></td>'
+        f'<td><span class="placement">{_esc(p["placement"])}</span></td></tr>'
         for p in phrases
     )
     return f"""
@@ -130,7 +153,7 @@ def _title_section(titles: list[dict]) -> str:
     if not titles:
         return ""
     items = "".join(
-        f"<li><strong>{t['title']}</strong><br><small class='muted'>{t['rationale']}</small></li>"
+        f"<li><strong>{_esc(t['title'])}</strong><br><small class='muted'>{_esc(t['rationale'])}</small></li>"
         for t in titles
     )
     return f"""
@@ -141,7 +164,7 @@ def _title_section(titles: list[dict]) -> str:
 
 
 def _rankmath_panel(rankmath: dict) -> str:
-    if not rankmath or not any(rankmath.values()):
+    if not _has_value(rankmath):
         return ""
     score = rankmath.get("seo_score")
     if score is not None:
@@ -149,9 +172,9 @@ def _rankmath_panel(rankmath: dict) -> str:
         score_html = f'<span style="color:{color};font-weight:700">{score}/100</span>'
     else:
         score_html = '<span style="color:#999">—</span>'
-    kw = rankmath.get("focus_keyword") or '<span style="color:#999">not set</span>'
-    mt = rankmath.get("meta_title") or '<em style="color:#999">using post title</em>'
-    md = rankmath.get("meta_description") or '<em style="color:#999">none</em>'
+    kw = _esc(rankmath.get("focus_keyword")) or '<span style="color:#999">not set</span>'
+    mt = _esc(rankmath.get("meta_title")) or '<em style="color:#999">using post title</em>'
+    md = _esc(rankmath.get("meta_description")) or '<em style="color:#999">none</em>'
     return f"""
     <div class="rm-panel">
       <h4 class="section-heading" style="margin-top:0">RankMath Snapshot</h4>
@@ -179,7 +202,7 @@ def _reco_section(recos: list[dict]) -> str:
     for r in recos:
         color = type_colors.get(r["type"], "#555")
         tag = _badge(r["type"].replace("_", " "), color)
-        items.append(f"<li>{tag} {r['suggestion']}</li>")
+        items.append(f"<li>{tag} {_esc(r['suggestion'])}</li>")
     return f"""
     <div class="section-block">
       <h4 class="section-heading">Content Recommendations</h4>
@@ -276,13 +299,13 @@ def _post_section(idx: int, metrics: dict, post: dict, analysis: dict | None,
 
     pills = (
         _metric_pill("Clicks", str(int(metrics["clicks"])),
-                     delta=_delta_span(metrics["clicks"], pm["clicks"] if pm else None, fmt="+.0f"))
+                     delta=_delta_span(metrics["clicks"], pm.get("clicks") if pm else None, fmt="+.0f"))
         + _metric_pill("Impressions", str(int(metrics["impressions"])),
-                       delta=_delta_span(metrics["impressions"], pm["impressions"] if pm else None, fmt="+.0f"))
+                       delta=_delta_span(metrics["impressions"], pm.get("impressions") if pm else None, fmt="+.0f"))
         + _metric_pill("CTR", _pct(metrics["ctr"]), warn=ctr_warn,
-                       delta=_delta_span(metrics["ctr"] * 100, pm["ctr"] * 100 if pm else None, fmt="+.1f"))
+                       delta=_delta_span(metrics["ctr"] * 100, pm.get("ctr", 0) * 100 if pm else None, fmt="+.1f"))
         + _metric_pill("Avg Position", _pos(metrics["position"]), warn=pos_warn,
-                       delta=_delta_span(metrics["position"], pm["position"] if pm else None, fmt="+.1f", invert=True))
+                       delta=_delta_span(metrics["position"], pm.get("position") if pm else None, fmt="+.1f", invert=True))
     )
 
     rm_panel = _rankmath_panel(post.get("rankmath", {}))
@@ -291,7 +314,7 @@ def _post_section(idx: int, metrics: dict, post: dict, analysis: dict | None,
 
     if analysis:
         summary = analysis.get("summary") or ""
-        summary_html = f'<div class="summary-box">{html.escape(summary)}</div>' if summary else ""
+        summary_html = f'<div class="summary-box">{_esc(summary)}</div>' if summary else ""
         body = f"""
         {rm_panel}
         {summary_html}
@@ -318,7 +341,7 @@ def _post_section(idx: int, metrics: dict, post: dict, analysis: dict | None,
       <summary>
         <span class="post-num">#{idx}</span>
         <span class="post-title">
-          <a href="{post['url']}" target="_blank">{post['title']}</a>
+          <a href="{_esc(post.get('url'))}" target="_blank">{_esc(post.get('title'))}</a>
         </span>
         <span class="reasons">{reasons_html}</span>
       </summary>
@@ -333,15 +356,15 @@ def _overview_row(idx: int, metrics: dict, post: dict, prev_metrics: dict | None
     return (
         f"<tr>"
         f'<td><a href="#post-{idx}">#{idx}</a></td>'
-        f'<td><a href="{post["url"]}" target="_blank">{post["title"]}</a></td>'
+        f'<td><a href="{_esc(post.get("url"))}" target="_blank">{_esc(post.get("title"))}</a></td>'
         f"<td>{int(metrics['impressions'])}"
-        f"{_delta_span(metrics['impressions'], pm['impressions'] if pm else None, fmt='+.0f')}</td>"
+        f"{_delta_span(metrics['impressions'], pm.get('impressions') if pm else None, fmt='+.0f')}</td>"
         f"<td>{int(metrics['clicks'])}"
-        f"{_delta_span(metrics['clicks'], pm['clicks'] if pm else None, fmt='+.0f')}</td>"
+        f"{_delta_span(metrics['clicks'], pm.get('clicks') if pm else None, fmt='+.0f')}</td>"
         f'<td class="{"warn" if metrics["ctr"] < 0.05 else ""}">{_pct(metrics["ctr"])}'
-        f"{_delta_span(metrics['ctr']*100, pm['ctr']*100 if pm else None, fmt='+.1f')}</td>"
+        f"{_delta_span(metrics['ctr']*100, pm.get('ctr', 0)*100 if pm else None, fmt='+.1f')}</td>"
         f'<td class="{"warn" if metrics["position"] > 20 else ""}">{_pos(metrics["position"])}'
-        f"{_delta_span(metrics['position'], pm['position'] if pm else None, fmt='+.1f', invert=True)}</td>"
+        f"{_delta_span(metrics['position'], pm.get('position') if pm else None, fmt='+.1f', invert=True)}</td>"
         f"</tr>"
     )
 

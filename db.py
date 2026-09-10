@@ -44,15 +44,23 @@ def save_page_state(url: str, metrics: dict, report_file: str) -> None:
 
 
 def cooldown_urls(all_metrics: list[dict], cooldown_days: int) -> set[str]:
-    """Return the set of URLs that were analyzed within the cooldown window."""
+    """
+    Return the set of URLs analyzed within the cooldown window.
+
+    One query for the whole window rather than one SELECT per candidate URL:
+    Search Console pagination can hand us tens of thousands of pages, and the
+    history table is small, so reading it once and intersecting is both
+    simpler and cheaper.
+    """
     cutoff = (date.today() - timedelta(days=cooldown_days)).isoformat()
-    excluded = set()
+    wanted = {row["page"] for row in all_metrics if row.get("page")}
+    if not wanted:
+        return set()
     with sqlite3.connect(DB_PATH) as conn:
-        for row in all_metrics:
-            url = row["page"]
-            result = conn.execute(
-                "SELECT last_analyzed FROM page_history WHERE url=?", (url,)
-            ).fetchone()
-            if result and result[0] >= cutoff:
-                excluded.add(url)
-    return excluded
+        recent = {
+            url
+            for (url,) in conn.execute(
+                "SELECT url FROM page_history WHERE last_analyzed >= ?", (cutoff,)
+            )
+        }
+    return wanted & recent
