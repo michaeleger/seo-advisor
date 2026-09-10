@@ -50,6 +50,8 @@
 2. **Rank Math Metadata Integrity**: Preserves native WP postmeta fields (`rank_math_title`, `rank_math_description`, `rank_math_focus_keyword`, `rank_math_robots`, `rank_math_schema_*`). Past work product remains 100% intact.
 3. **Reusing Existing Rank Math Tools**: Leverages [eager-rankmath-rest.php](file:///home/aiuser/projects/seo-advisor/wordpress-plugin/eager-rankmath-rest.php) and [wp_client.py](file:///home/aiuser/projects/seo-advisor/wp_client.py) to read and expose native Rank Math plugin scores without slow or inaccurate third-party scrapers.
 4. **Rank Math Improvable-First Prioritization**: Focuses processing energy strictly on posts scoring under **80/100** in Rank Math, sorted by score tiers (`<20` critical ➔ `20-39` poor ➔ `40-59` fair ➔ `60-79` improvable).
+5. **The Reader Outranks the Score**: Every metric in this tool is a *diagnostic*, never a specification. Rewrites are written for a person who arrived with a question. A human editor reviews each one and **rejects copy that reads as though it was written for a search engine or an answer engine** — padded word counts, repeated keywords, headings and FAQ blocks bolted on to satisfy a checklist. A page that scores 70 and reads well beats a page that scores 95 and reads like it was assembled for a crawler. Where satisfying a Rank Math rule would make a page worse to read, the rule loses.
+6. **The Live Page Is the Source of Truth**: The report carries measurements about a page, never a copy of it. The model reads the published URL for content, markup, images and styling.
 
 ---
 
@@ -73,13 +75,16 @@
 **Problem**: Large HTML body dumps exceed LLM chat context limits or cause cluttered responses.
 **Implemented**: `wp_client.content_structure()` summarizes the rendered HTML and
 `briefing.py` renders it per page:
-- Heading outline (H1–H6), total word count, and **the article verbatim**
-  (a rewrite driven by excerpts silently drops the middle).
+- Heading outline (H1–H6) and total word count.
+- **No article text.** The published page is the source of truth for content,
+  markup, images and styling; the prompt sends the model to the live URL.
+  A stripped copy in the report would be a degraded duplicate.
 - Paragraph count and how many exceed Rank Math's long-paragraph threshold;
   image count and how many lack alt text; internal / external /
   external-dofollow link counts.
-- A **"Falls short of Rank Math's rubric"** line naming the plugin rules the
-  page currently misses, measurement first (see Improvement 2 revised).
+- A **"Rank Math diagnostics (observations, not targets)"** line naming the
+  plugin rules the page currently misses, measurement first (see Improvement 2
+  revised).
 - Exact list of low-CTR GSC keywords for the page.
 - Specific Lighthouse accessibility / speed issues affecting HTML markup (e.g., missing alt text, non-descriptive link anchors, tap target spacing).
 
@@ -105,7 +110,7 @@ The prompt in `briefing.py` therefore draws a hard line:
 | GSC / Bing / Planner metrics | Which artifacts to return, and their shape |
 | Rank Math score + rubric misses | Markup, semantics, accessibility, responsive behaviour |
 | PageSpeed lab + CrUX defects | Typography, layout, component structure |
-| Content measurements + the article verbatim | Image formats, sizing, art direction |
+| Structural measurements + the live URL | Image formats, sizing, art direction |
 
 It instructs the model to apply the standards current as of its own knowledge,
 and to override how the page is built today where the two conflict.
@@ -120,6 +125,12 @@ one exception, and they are quarantined: named constants, documented as the
 plugin's scoring rubric, rendered as `"707 words (Rank Math wants ≥600)"` so
 the measurement leads and the threshold is attributed. A rubric change dates
 the label, not the fact.
+
+They are also **rendered as diagnostics, never as targets** — see Pillar 5.
+The prompt states outright that satisfying one is optional where it would hurt
+the reading experience, and asks the model to say why it left one unmet.
+Instructing a model to "clear" a rubric is what produces padded, link-stuffed
+copy; the human reviewer rejects that, so the tool must not ask for it.
 
 ### Improvement 3: Write-Back — Out of Scope (handled by `wp.py`)
 **Decision:** this repo does **not** build a paste-back importer. An earlier
@@ -179,8 +190,8 @@ The report generated for Grok/Claude chat specifically highlights which of these
 
 1. **Keep the zero-cost architecture**: Run data extraction locally via `./run.sh`.
 2. ✅ **Optimize `briefing.py`**: content structure (heading outline, word count,
-   link/image counts) plus the article verbatim and a per-page
-   "Falls short of Rank Math's rubric" line now replace the truncated excerpt.
+   link/image counts) plus a per-page "Rank Math diagnostics" line replace the
+   truncated excerpt. Content itself is read from the live page, not shipped.
 3. ✅ **Chat Handoff Prompt**: asks for a full page rewrite and delegates output
    format and design standards to the model. Deliberately schema-free — the
    payload shape is not pinned by this repo.
