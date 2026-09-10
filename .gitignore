@@ -4,17 +4,38 @@ __pycache__/
 *.pyo
 .venv/
 venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
 
-# Auth & secrets
+# ── Secrets & credentials (NEVER commit) ─────────────────────────────────────
+.env
+.env.*
+!.env.example
+client_secret.json
+token.json
+ads_token.json
 credentials.json
+*.pem
+*.key
 .oauth_state
+# One-shot OAuth helper artifacts (contain client_id + stale state/PKCE)
+ads_oauth_url.txt
+open_ads_oauth.html
+
+# Local runtime / generated
+seo_state.db
+*.db
 *.bak
 *.log
+reports/*.md
+reports/*.json
+# Keep example HTML out of force-push accidents; reports are regenerable
+reports/seo_report_*.html
+reports/llm_raw_fail_*.txt
 
-# OS
+# OS / editor
 .DS_Store
 Thumbs.db
-
-# Editor
 .vscode/
 .idea/
