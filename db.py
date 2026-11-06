@@ -12,8 +12,9 @@ import sqlite3
 from datetime import date, timedelta
 
 import config
+from analyzer import canonical_key
 
-DB_PATH = "seo_state.db"
+DB_PATH = str(config.PROJECT_DIR / "seo_state.db")
 
 
 def _connect():
@@ -39,6 +40,51 @@ def init_db() -> None:
         ):
             if column not in existing:
                 conn.execute(f"ALTER TABLE page_history ADD COLUMN {column} {ddl}")
+        _rekey_to_canonical(conn)
+
+
+_COLUMNS = (
+    "url", "last_analyzed", "last_metrics", "report_file",
+    "last_modified_seen", "times_suggested", "defer_until",
+)
+
+
+def _rekey_to_canonical(conn) -> None:
+    """
+    Migrate rows keyed by raw URL to canonical_key.
+
+    History written before keys were canonical can hold one page twice
+    (`https://www.e.com/p/` and `https://e.com/p`). The most recently analysed
+    row wins; a stamp only the older row knew is kept rather than lost — the
+    same "absent is not a value" rule save_page_state follows.
+    """
+    rows = conn.execute(f"SELECT {', '.join(_COLUMNS)} FROM page_history").fetchall()
+    groups: dict[str, list[dict]] = {}
+    for row in rows:
+        record = dict(zip(_COLUMNS, row))
+        groups.setdefault(canonical_key(record["url"]), []).append(record)
+
+    for key, records in groups.items():
+        if len(records) == 1 and records[0]["url"] == key:
+            continue
+        records.sort(
+            key=lambda r: (r["last_analyzed"] or "", r["times_suggested"] or 0),
+            reverse=True,
+        )
+        merged = dict(records[0], url=key)
+        for column in ("report_file", "last_modified_seen", "defer_until"):
+            if not merged[column]:
+                merged[column] = next(
+                    (r[column] for r in records[1:] if r[column]), None
+                )
+        conn.executemany(
+            "DELETE FROM page_history WHERE url=?", [(r["url"],) for r in records]
+        )
+        conn.execute(
+            f"INSERT INTO page_history ({', '.join(_COLUMNS)}) "
+            f"VALUES ({', '.join('?' for _ in _COLUMNS)})",
+            tuple(merged[c] for c in _COLUMNS),
+        )
 
 
 def get_page_state(url: str) -> dict | None:
@@ -46,7 +92,7 @@ def get_page_state(url: str) -> dict | None:
         row = conn.execute(
             "SELECT last_analyzed, last_metrics, report_file, last_modified_seen, "
             "times_suggested, defer_until FROM page_history WHERE url=?",
-            (url,),
+            (canonical_key(url),),
         ).fetchone()
     if not row:
         return None
@@ -61,7 +107,11 @@ def get_page_state(url: str) -> dict | None:
 
 
 def get_all_states() -> dict[str, dict]:
-    """Whole history in one read — the table is small and callers want it all."""
+    """
+    Whole history in one read — the table is small and callers want it all.
+
+    Keyed by canonical_key, the same identity select_pages looks pages up by.
+    """
     with _connect() as conn:
         rows = conn.execute(
             "SELECT url, last_analyzed, last_metrics, report_file, "
@@ -103,23 +153,41 @@ def save_page_state(
     times_suggested: int = 1,
     defer_days: int | None = None,
 ) -> None:
-    """Record a suggestion and set the window before this page may return."""
+    """
+    Record a suggestion and set the window before this page may return.
+
+    An absent `wp_modified` means "we did not learn an edit date this run" —
+    a catalog stub, a WP fetch that failed — not "this page has no edit date".
+    An INSERT OR REPLACE wrote NULL over the stored stamp, so the next run had
+    nothing to compare against and edit detection could never fire. Upsert and
+    COALESCE instead: a missing value leaves what we already knew alone.
+    """
     metrics_clean = {k: v for k, v in metrics.items() if k != "reasons"}
     if defer_days is None:
         defer_days = backoff_days(times_suggested)
     defer_until = (date.today() + timedelta(days=defer_days)).isoformat()
+    modified = (wp_modified or "").strip() or None
     with _connect() as conn:
         conn.execute(
-            """INSERT OR REPLACE INTO page_history
+            """INSERT INTO page_history
                (url, last_analyzed, last_metrics, report_file,
                 last_modified_seen, times_suggested, defer_until)
-               VALUES (?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?)
+               ON CONFLICT(url) DO UPDATE SET
+                 last_analyzed      = excluded.last_analyzed,
+                 last_metrics       = excluded.last_metrics,
+                 report_file        = COALESCE(excluded.report_file,
+                                               page_history.report_file),
+                 last_modified_seen = COALESCE(excluded.last_modified_seen,
+                                               page_history.last_modified_seen),
+                 times_suggested    = excluded.times_suggested,
+                 defer_until        = excluded.defer_until""",
             (
-                url,
+                canonical_key(url),
                 date.today().isoformat(),
                 json.dumps(metrics_clean),
                 report_file,
-                wp_modified,
+                modified,
                 int(times_suggested),
                 defer_until,
             ),
@@ -140,7 +208,7 @@ def mark_edited(url: str, wp_modified: str) -> None:
             """UPDATE page_history
                SET last_modified_seen=?, times_suggested=0, defer_until=?
                WHERE url=?""",
-            (wp_modified, defer_until, url),
+            (wp_modified, defer_until, canonical_key(url)),
         )
 
 
@@ -158,9 +226,9 @@ def cooldown_urls(all_metrics: list[dict], cooldown_days: int) -> set[str]:
         return set()
     with _connect() as conn:
         recent = {
-            url
+            canonical_key(url)
             for (url,) in conn.execute(
                 "SELECT url FROM page_history WHERE last_analyzed >= ?", (cutoff,)
             )
         }
-    return wanted & recent
+    return {page for page in wanted if canonical_key(page) in recent}

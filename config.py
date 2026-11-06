@@ -1,7 +1,32 @@
 import os
+from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv(override=True)
+# Every relative file path resolves against this directory, not the caller's
+# cwd, so cron, systemd and a promoted copy all find the same files.
+PROJECT_DIR = Path(__file__).resolve().parent
+
+load_dotenv(PROJECT_DIR / ".env", override=True)
+
+
+def project_path(value: str | os.PathLike) -> str:
+    """Absolute paths pass through; relative ones anchor to PROJECT_DIR."""
+    p = Path(value).expanduser()
+    return str(p if p.is_absolute() else PROJECT_DIR / p)
+
+
+def write_private_text(path: str | os.PathLike, text: str) -> None:
+    """
+    Write a secret-bearing file (OAuth token, .env) as owner-only 0600.
+
+    The mode is set on the open descriptor BEFORE writing, so an existing
+    world-readable file is tightened rather than refilled as-is. Symlinks are
+    followed, which keeps a promoted copy's links pointing at the real file.
+    """
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(text)
 
 
 def _csv_env(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
@@ -11,7 +36,9 @@ def _csv_env(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
         return default
     return tuple(s.strip().lower() for s in raw.split(",") if s.strip())
 
-GSC_CREDENTIALS_FILE = os.getenv("GSC_CREDENTIALS_FILE", "client_secret.json")
+GSC_CREDENTIALS_FILE = project_path(
+    os.getenv("GSC_CREDENTIALS_FILE", "client_secret.json")
+)
 GSC_SITE_URL = os.getenv("GSC_SITE_URL", "https://eagertobehealthy.com/")
 WP_SITE_URL = os.getenv("WP_SITE_URL", "https://www.eagertobehealthy.com")
 
@@ -51,7 +78,7 @@ MAX_POSITION = float(os.getenv("MAX_POSITION", "20"))
 MAX_POSTS_TO_ANALYZE = int(os.getenv("MAX_POSTS_TO_ANALYZE", "10"))
 
 COOLDOWN_DAYS = int(os.getenv("COOLDOWN_DAYS", "60"))
-REPORTS_DIR = os.getenv("REPORTS_DIR", "reports")
+REPORTS_DIR = project_path(os.getenv("REPORTS_DIR", "reports"))
 
 # ─── Backoff — a deferred page always returns ────────────────────────────────
 # A page suggested but not edited is a page you had no capacity for, not one
@@ -167,8 +194,10 @@ SKIP_SLUG_SUBSTRINGS = _csv_env(
     "SKIP_SLUG_SUBSTRINGS", ("privacy-policy", "cookie", "terms-of")
 )
 
-# ─── RankMath prioritization ─────────────────────────────────────────────────
-# Prefer most improvable posts: score tiers under 20 / 40 / 60 / 80 first.
+# ─── RankMath ────────────────────────────────────────────────────────────────
+# Ranking is by neglected under-performance (see analyzer.priority_score); the
+# Rank Math score is only the fixability multiplier. PRIORITIZE_BY_RANKMATH is
+# no longer read by selection — kept so existing .env files still parse.
 PRIORITIZE_BY_RANKMATH = os.getenv("PRIORITIZE_BY_RANKMATH", "1").strip().lower() in (
     "1",
     "true",
@@ -181,8 +210,19 @@ RANKMATH_SKIP_SCORE = int(os.getenv("RANKMATH_SKIP_SCORE", "80"))
 WP_APP_USER = os.getenv("WP_APP_USER", "").strip()
 WP_APP_PASSWORD = os.getenv("WP_APP_PASSWORD", "").strip()
 
+# ─── WordPress catalog budgets ───────────────────────────────────────────────
+# Per CONTENT TYPE, not per run: posts and pages are paged independently so a
+# post-heavy site can never exhaust the budget before `pages` is fetched. High
+# enough to page a normal site to exhaustion; truncation is logged, not silent.
+WP_CATALOG_PER_TYPE_MAX = int(os.getenv("WP_CATALOG_PER_TYPE_MAX", "2000"))
+# How many RankMath score rows to pull for the overlay (its own budget).
+WP_RANKMATH_MAX_ITEMS = int(os.getenv("WP_RANKMATH_MAX_ITEMS", "2000"))
+
 # ─── PageSpeed Insights (only after pages are selected) ──────────────────────
 # Free Google API. Scans ONLY the worst-N URLs chosen in stage 1 — not the whole site.
+# USE_PAGESPEED alone is not enough to run the stage: PAGESPEED_API_KEY must also
+# be set (see pagespeed.is_configured). Anonymous PSI 429s on every request, so a
+# keyless run costs a request per selected URL and returns nothing.
 USE_PAGESPEED = os.getenv("USE_PAGESPEED", "1").strip().lower() in (
     "1",
     "true",

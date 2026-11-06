@@ -16,6 +16,7 @@ Writes BING_API_KEY + BING_SITE_URL into .env and tests the connection.
 """
 from __future__ import annotations
 
+import os
 import re
 import sys
 from pathlib import Path
@@ -39,7 +40,11 @@ def _upsert_env(key: str, value: str) -> None:
         text = re.sub(r"^USE_BING=.*$", "USE_BING=1", text, flags=re.MULTILINE)
     else:
         text += "USE_BING=1\n"
-    ENV_PATH.write_text(text, encoding="utf-8")
+    # .env holds every API secret: owner-only, same as the OAuth token files.
+    fd = os.open(ENV_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(text)
 
 
 def main(argv: list[str]) -> int:

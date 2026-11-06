@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Eager RankMath REST Expose
  * Description: Exposes Rank Math's real SEO scores (rank_math_seo_score) via REST so SEO Advisor can prioritize pages without an AI audit (~$0, RankMath already computed the score).
- * Version: 1.1.0
+ * Version: 1.1.1
  * Author: Eager to Be Healthy
  *
  * INSTALL (pick one):
@@ -129,6 +129,12 @@ add_action('rest_api_init', function () {
                     'url'   => get_permalink($post),
                     'type'  => $post->post_type,
                     'slug'  => $post->post_name,
+                    // Site-local RFC 3339, the same serialisation wp/v2 uses
+                    // for `modified`. The raw MySQL column
+                    // (`YYYY-MM-DD HH:MM:SS`) differs from wp/v2 as a string,
+                    // and the advisor read that as an edit. It ranks by
+                    // neglect, so a row with no edit date cannot be ranked.
+                    'modified' => mysql_to_rfc3339($post->post_modified),
                     'rankmath' => $payload,
                     // flat fields for simple clients
                     'seo_score'     => $score,

@@ -278,9 +278,13 @@ def _complete_local(system: str, user: str) -> str:
         return _call_ollama(system, user)
     if provider in ("openai_compat", "openai", "llamacpp", "llama.cpp"):
         return _call_openai_compat(system, user)
-    raise RuntimeError(
+    raise LocalLLMConfigError(
         f"Unknown LOCAL_LLM_PROVIDER={provider!r}. Use ollama or openai_compat."
     )
+
+
+class LocalLLMConfigError(RuntimeError):
+    """The local LLM is misconfigured — every page would fail the same way."""
 
 
 def recommend_keywords(metrics: dict, queries: list[dict], post: dict) -> dict | None:

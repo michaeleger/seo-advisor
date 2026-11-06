@@ -1,7 +1,9 @@
 """
 Google Ads Keyword Planner enrichment (volume / competition / CPC).
 
-Requires a Google Ads account + API developer token (Basic access for production).
+Requires a Google Ads account + OAuth + customer ID.
+As of Sep 2026, API access level lives on the Cloud project (Basic/Explorer);
+developer_token is optional/ignored by Google but still accepted if set.
 Setup: see SETUP.md "Google Ads Keyword Planner".
 
 Gracefully no-ops when credentials are missing so the semi-auto GSC path still works.
@@ -21,9 +23,10 @@ _GEO_TARGET_US = "2840"  # United States
 
 
 def is_configured() -> bool:
+    # Developer token sunset Sep 2026 — Cloud project Basic access is the gate.
+    # Token still sent if present for older client libs; not required to enable.
     return bool(
-        config.GOOGLE_ADS_DEVELOPER_TOKEN
-        and config.GOOGLE_ADS_CUSTOMER_ID
+        config.GOOGLE_ADS_CUSTOMER_ID
         and config.GOOGLE_ADS_REFRESH_TOKEN
         and config.GOOGLE_ADS_CLIENT_ID
         and config.GOOGLE_ADS_CLIENT_SECRET
@@ -32,13 +35,13 @@ def is_configured() -> bool:
 
 def status_message() -> str:
     if is_configured():
+        cid = config.GOOGLE_ADS_CUSTOMER_ID.replace("-", "")
+        masked = ("*" * max(0, len(cid) - 4)) + cid[-4:] if cid else "?"
         return (
-            f"configured (customer={config.GOOGLE_ADS_CUSTOMER_ID}, "
+            f"configured (customer={masked}, "
             f"geo={config.GOOGLE_ADS_GEO_TARGET_IDS})"
         )
     missing = []
-    if not config.GOOGLE_ADS_DEVELOPER_TOKEN:
-        missing.append("GOOGLE_ADS_DEVELOPER_TOKEN")
     if not config.GOOGLE_ADS_CUSTOMER_ID:
         missing.append("GOOGLE_ADS_CUSTOMER_ID")
     if not config.GOOGLE_ADS_REFRESH_TOKEN:
@@ -52,7 +55,8 @@ def _client():
     from google.ads.googleads.client import GoogleAdsClient
 
     cfg = {
-        "developer_token": config.GOOGLE_ADS_DEVELOPER_TOKEN,
+        # Empty string OK after Sep 2026 sunset; Google ignores the header.
+        "developer_token": config.GOOGLE_ADS_DEVELOPER_TOKEN or "",
         "client_id": config.GOOGLE_ADS_CLIENT_ID,
         "client_secret": config.GOOGLE_ADS_CLIENT_SECRET,
         "refresh_token": config.GOOGLE_ADS_REFRESH_TOKEN,
@@ -72,6 +76,39 @@ def _geo_ids() -> list[str]:
     return [g.strip() for g in raw.split(",") if g.strip()]
 
 
+def _set_seed(request, seeds: list[str], page_url: str | None) -> None:
+    """
+    Fill the request's `seed` oneof with exactly ONE member.
+
+    keyword_seed, url_seed and keyword_and_url_seed are mutually exclusive:
+    assigning url_seed after keyword_seed silently clears the keywords, so
+    the old code sent a URL-only request whenever both were supplied.
+    """
+    seeds = seeds[:20]
+    if seeds and page_url:
+        request.keyword_and_url_seed.keywords.extend(seeds)
+        request.keyword_and_url_seed.url = page_url
+    elif seeds:
+        request.keyword_seed.keywords.extend(seeds)
+    elif page_url:
+        request.url_seed.url = page_url
+
+
+def _build_idea_request(
+    client, customer_id: str, seeds: list[str], page_url: str | None
+):
+    request = client.get_type("GenerateKeywordIdeasRequest")
+    request.customer_id = customer_id
+    ads_service = client.get_service("GoogleAdsService")
+    request.language = ads_service.language_constant_path(_LANGUAGE_ID)
+    for geo in _geo_ids():
+        request.geo_target_constants.append(ads_service.geo_target_constant_path(geo))
+    request.include_adult_keywords = False
+    request.keyword_plan_network = client.enums.KeywordPlanNetworkEnum.GOOGLE_SEARCH
+    _set_seed(request, seeds, page_url)
+    return request
+
+
 def fetch_keyword_ideas(seed_keywords: list[str], *, page_url: str | None = None) -> list[dict]:
     """
     Generate keyword ideas + historical metrics from seed phrases and/or a page URL.
@@ -86,27 +123,8 @@ def fetch_keyword_ideas(seed_keywords: list[str], *, page_url: str | None = None
 
     try:
         client = _client()
-        customer_id = _customer_id()
         idea_service = client.get_service("KeywordPlanIdeaService")
-        request = client.get_type("GenerateKeywordIdeasRequest")
-        request.customer_id = customer_id
-        request.language = client.get_service("GoogleAdsService").language_constant_path(
-            _LANGUAGE_ID
-        )
-        for geo in _geo_ids():
-            request.geo_target_constants.append(
-                client.get_service("GoogleAdsService").geo_target_constant_path(geo)
-            )
-        request.include_adult_keywords = False
-        request.keyword_plan_network = (
-            client.enums.KeywordPlanNetworkEnum.GOOGLE_SEARCH
-        )
-
-        if seeds:
-            request.keyword_seed.keywords.extend(seeds[:20])
-        if page_url:
-            request.url_seed.url = page_url
-
+        request = _build_idea_request(client, _customer_id(), seeds, page_url)
         response = idea_service.generate_keyword_ideas(request=request)
         out: list[dict] = []
         for idea in response:

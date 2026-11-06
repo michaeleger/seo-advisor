@@ -4,9 +4,11 @@ Build the handoff report for manual Claude use (semi-automatic model).
 from __future__ import annotations
 
 import json
+import re
 from datetime import date
 from typing import Any
 
+import analyzer
 import config
 
 # Rank Math's own scoring thresholds, mirrored here only so the briefing can
@@ -93,8 +95,18 @@ like it was assembled for a crawler.
   the rewrite (LCP image handling, layout shift, render-blocking, heading
   order, alt text, tap targets) rather than restating them as advice.
 
-Pages are ordered Rank Math improvable-first (under 20 → 40 → 60 → 80), then
-GSC opportunity within a tier.
+Pages are ordered by NEGLECTED UNDER-PERFORMANCE, highest first:
+  missed clicks × neglect × fixability × decay
+- missed clicks: Search Console demand the page fails to capture — clicks
+  lost to a weak CTR for its position, plus clicks available by ranking
+  higher. Pages below the impressions floor are not considered at all.
+- neglect: grows with time since the page was last edited.
+- fixability: a modest multiplier from the Rank Math score. It says how much
+  obvious work is available, not how much the page matters, and it is not
+  the sort key — a low score alone does not put a page first.
+- decay: a boost when impressions are falling against the prior window.
+Pages at or above the Rank Math skip score, and pages edited recently, are
+left out. Pages that were suggested before but not edited stay in the queue.
 
 ── Also produce ────────────────────────────────────────────────────────────
 - Executive summary: what to rewrite first and why.
@@ -109,10 +121,50 @@ to publish, not ready to discuss.
 """
 
 
+# This briefing is pasted into a chat window and served over the web, so a
+# stage that fails must not be able to smuggle its response body in with it.
+# PSI already collapses its own errors; this is the render-side guarantee that
+# holds whatever the upstream does.
+_PSI_ERROR_MAX_CHARS = 160
+_LONG_DIGIT_RUN = re.compile(r"\d{7,}")
+
+
+def _safe_stage_error(raw: Any) -> str:
+    """One short line: no JSON body, no long numeric ids, no newlines."""
+    text = str(raw or "").strip()
+    if not text:
+        return "unknown error"
+    # A response body starts at its first brace/bracket — drop from there.
+    cut = min((i for i in (text.find("{"), text.find("[")) if i != -1), default=-1)
+    if cut == 0:
+        return "unknown error"
+    if cut > 0:
+        text = text[:cut]
+    text = " ".join(text.split())
+    # Project numbers and quota ids are long digit runs; nothing we print needs one.
+    text = _LONG_DIGIT_RUN.sub("[redacted]", text)
+    if len(text) > _PSI_ERROR_MAX_CHARS:
+        text = text[:_PSI_ERROR_MAX_CHARS].rstrip() + "…"
+    return text or "unknown error"
+
+
 def _fmt_pct(v: float | None, digits: int = 1) -> str:
     if v is None:
         return "n/a"
     return f"{v * 100:.{digits}f}%"
+
+
+def _tier_label_for(score: int | None, fallback: str | None = "") -> str:
+    """
+    Label the score this report is actually printing.
+
+    A tier label set during selection describes what was known then. Pairing
+    it with a score discovered later produced `score=10/100 (unknown RankMath
+    score)` — two contradictory facts on one line.
+    """
+    if score is None:
+        return fallback or ""
+    return analyzer.resolve_rankmath(score)["rankmath_tier_label"]
 
 
 def _fmt_delta(v: float | None, kind: str = "num") -> str:
@@ -226,6 +278,18 @@ def build_briefing_payload(
         post = r["post"]
         analysis = r.get("analysis") or {}
         queries = r.get("queries") or []
+        # Selection may have run before the page's own Rank Math score was
+        # known; Stage 2b finds it later. Resolve score and tier together so
+        # the report cannot show one contradicting the other.
+        rm_score = metrics.get("rankmath_score")
+        if rm_score is None:
+            rm_score = (post.get("rankmath") or {}).get("seo_score")
+        _rm = analyzer.resolve_rankmath(rm_score)
+        rm_resolved = {
+            "seo_score": _rm["rankmath_score"],
+            "tier": _rm["rankmath_tier"],
+            "tier_label": _rm["rankmath_tier_label"],
+        }
         posts.append({
             "title": post.get("title"),
             "url": post.get("url") or metrics.get("page"),
@@ -237,9 +301,7 @@ def build_briefing_payload(
                 "reasons": metrics.get("reasons") or [],
             },
             "rankmath_priority": {
-                "seo_score": metrics.get("rankmath_score"),
-                "tier": metrics.get("rankmath_tier"),
-                "tier_label": metrics.get("rankmath_tier_label"),
+                **rm_resolved,
                 "focus_keyword": metrics.get("focus_keyword")
                 or (post.get("rankmath") or {}).get("focus_keyword"),
             },
@@ -278,7 +340,8 @@ def build_briefing_payload(
         "post_count": len(posts),
         "local_model": config.local_llm_label(),
         "pipeline": [
-            "1) Select worst/improvable pages (GSC + RankMath tiers)",
+            "1) Select most neglected under-performing pages "
+            "(missed clicks × neglect × fixability × decay)",
             "2) Enrich selected pages only (WP, GSC slices, Bing, Planner)",
             "3) PageSpeed scan selected pages only (lab + CrUX when available)",
             "4) Manual Claude handoff — keywords + fresh HTML guidance",
@@ -308,9 +371,28 @@ def briefing_to_markdown(briefing: dict[str, Any]) -> str:
     dr = ctx.get("date_range") or {}
     cur = dr.get("current") or {}
     prev = dr.get("previous") or {}
+    cmp_cur = dr.get("comparison_current") or {}
     planner = briefing.get("keyword_planner") or {}
     bing = briefing.get("bing") or {}
     psi = briefing.get("pagespeed") or {}
+    psi_counts = ""
+    if psi.get("scanned") is not None:
+        requested = psi.get("requested")
+        psi_counts = (
+            f" (ok {psi.get('ok_count', 0)}/{psi.get('scanned', 0)} scanned"
+            + (
+                f" of {requested} requested"
+                if requested is not None and requested != psi.get("scanned")
+                else ""
+            )
+            + ")"
+        )
+    # A 429 stop is the one PSI note that changes how to read the page
+    # sections: pages past the stop have no PageSpeed block by design.
+    psi_stop_note = next(
+        (n for n in psi.get("notes") or [] if str(n).startswith("Stopped after")),
+        None,
+    ) if psi.get("stopped_early") else None
 
     lines = [
         "# SEO Data Briefing — paste into Claude",
@@ -319,16 +401,22 @@ def briefing_to_markdown(briefing: dict[str, Any]) -> str:
         f"**Generated:** {briefing.get('generated_on')}",
         f"**GSC window:** last {days} days"
         + (f" ({cur.get('start')} → {cur.get('end')})" if cur.get("start") else ""),
-        f"**Compare vs prior:** {prev.get('start', '?')} → {prev.get('end', '?')}",
-        f"**Keyword Planner:** {planner.get('status') or ('on' if planner.get('enabled') else 'off')}",
-        f"**Bing:** {bing.get('status') or ('on' if bing.get('enabled') else 'off')}",
-        f"**PageSpeed:** {psi.get('status') or ('on' if psi.get('enabled') else 'off')}"
+        "**Compare vs prior:** "
+        + (f"{prev['days']}d windows — " if prev.get("days") else "")
+        + f"{prev.get('start', '?')} → {prev.get('end', '?')}"
         + (
-            f" (scanned {psi.get('ok_count', 0)}/{psi.get('scanned', 0)} selected)"
-            if psi.get("scanned") is not None
+            f" vs {cmp_cur.get('start')} → {cmp_cur.get('end')}"
+            if cmp_cur.get("start")
             else ""
         ),
-        f"**Posts:** {briefing.get('post_count')} selected (worst / improvable first)",
+        f"**Keyword Planner:** {planner.get('status') or ('on' if planner.get('enabled') else 'off')}",
+        f"**Bing:** {bing.get('status') or ('on' if bing.get('enabled') else 'off')}",
+        f"**PageSpeed:** "
+        f"{_safe_stage_error(psi.get('status')) if psi.get('status') else ('on' if psi.get('enabled') else 'off')}"
+        + psi_counts,
+        *([f"**PageSpeed note:** {psi_stop_note}"] if psi_stop_note else []),
+        f"**Posts:** {briefing.get('post_count')} selected "
+        "(most neglected under-performance first)",
         "",
         "## How to use",
         "1. Copy this entire file.",
@@ -348,7 +436,8 @@ def briefing_to_markdown(briefing: dict[str, Any]) -> str:
         "page it has not read.",
         "",
         "### Selection order",
-        "1. Identify worst/improvable pages (RankMath tiers + GSC).",
+        "1. Rank pages by neglected under-performance: missed clicks (GSC) × "
+        "neglect (time since last edit) × fixability (Rank Math score) × decay.",
         "2. Enrich those pages only.",
         "3. **Then** PageSpeed-scan only the selected URLs (not the whole site).",
         "",
@@ -559,7 +648,7 @@ def briefing_to_markdown(briefing: dict[str, Any]) -> str:
         [
             "---",
             "",
-            "## Overview — improvable first (RankMath tiers, then GSC)",
+            "## Overview — most neglected under-performance first",
             "",
             "| # | Title | RM score | Tier | Impr | Clicks | CTR | Pos | Why flagged |",
             "|---|-------|---------:|------|-----:|-------:|----:|----:|-------------|",
@@ -573,7 +662,7 @@ def briefing_to_markdown(briefing: dict[str, Any]) -> str:
         if score is None:
             score = rm.get("seo_score")
         score_s = str(score) if score is not None else "—"
-        tier = rp.get("tier_label") or "—"
+        tier = _tier_label_for(score, rp.get("tier_label")) or "—"
         title = (p.get("title") or "Untitled").replace("|", "/")
         reasons = "; ".join(g.get("reasons") or []) or "—"
         lines.append(
@@ -605,7 +694,7 @@ def briefing_to_markdown(briefing: dict[str, Any]) -> str:
         score = rp.get("seo_score")
         if score is None:
             score = rm.get("seo_score")
-        tier = rp.get("tier_label") or ""
+        tier = _tier_label_for(score, rp.get("tier_label"))
         focus = rp.get("focus_keyword") or rm.get("focus_keyword") or "n/a"
         if score is not None:
             lines.append(
@@ -629,9 +718,19 @@ def briefing_to_markdown(briefing: dict[str, Any]) -> str:
             cur_w = period.get("current_window") or {}
             prev_w = period.get("previous_window") or {}
             d = period.get("delta") or {}
+            # The comparison pair has its own length — shorter than
+            # DATE_RANGE_DAYS so the prior half stays inside Search Console
+            # retention. Labelling it "vs prior 365d" describes a window we
+            # never queried.
+            window_days = cur_w.get("days") or prev_w.get("days")
+            trend_label = (
+                f"- **Trend vs prior {window_days}d:** "
+                if window_days
+                else "- **Trend vs prior window:** "
+            )
             lines.append(
-                f"- **Trend vs prior {days}d:** "
-                f"impr {int(prev_w.get('impressions') or 0)}→{int(cur_w.get('impressions') or 0)} "
+                trend_label
+                + f"impr {int(prev_w.get('impressions') or 0)}→{int(cur_w.get('impressions') or 0)} "
                 f"({_fmt_delta(d.get('impressions_pct'), 'ratio')}), "
                 f"clicks {int(prev_w.get('clicks') or 0)}→{int(cur_w.get('clicks') or 0)}, "
                 f"pos {float(prev_w.get('position') or 0):.1f}→{float(cur_w.get('position') or 0):.1f}"
@@ -721,7 +820,9 @@ def briefing_to_markdown(briefing: dict[str, Any]) -> str:
                                 )
                             )
             elif ps.get("error"):
-                lines.append(f"- **PageSpeed:** failed — {ps.get('error')}")
+                lines.append(
+                    f"- **PageSpeed:** failed — {_safe_stage_error(ps.get('error'))}"
+                )
 
         lines.extend(content_lines)
         lines.append("")

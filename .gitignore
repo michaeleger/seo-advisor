@@ -26,6 +26,8 @@ open_ads_oauth.html
 # Local runtime / generated
 seo_state.db
 *.db
+# Operator backups (state DB, .env copies)
+backups/
 *.bak
 *.log
 reports/*.md

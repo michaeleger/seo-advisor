@@ -4,7 +4,7 @@ google-auth>=2.23.0
 google-auth-oauthlib>=1.0.0
 
 # Google Ads Keyword Planner (optional — enable when Ads account is ready)
-google-ads>=25.0.0
+google-ads>=32.0.0
 
 # HTTP + env
 requests>=2.31.0

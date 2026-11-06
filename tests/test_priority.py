@@ -107,8 +107,16 @@ class TestPriorityRanking:
             wp_posts=[dict(wp_post(url, score=30), modified=days_ago(800))],
         )
         reasons = " ".join(out["selected"][0]["reasons"])
-        assert "clicks/yr" in reasons
+        # conftest pins DATE_RANGE_DAYS=90 — the figure is a 90-day one.
+        assert "clicks/90d" in reasons
+        assert "clicks/yr" not in reasons
         assert "Not edited in" in reasons
+
+    def test_clicks_unit_follows_the_gsc_window(self, monkeypatch):
+        monkeypatch.setattr(analyzer.config, "DATE_RANGE_DAYS", 365)
+        assert analyzer.clicks_window_label() == "clicks/yr"
+        monkeypatch.setattr(analyzer.config, "DATE_RANGE_DAYS", 180)
+        assert analyzer.clicks_window_label() == "clicks/180d"
 
 
 class TestBackoffQueue:

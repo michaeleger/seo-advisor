@@ -20,7 +20,7 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 import config
 
 _SCOPES = ["https://www.googleapis.com/auth/webmasters.readonly"]
-_TOKEN_FILE = "token.json"
+_TOKEN_FILE = config.PROJECT_DIR / "token.json"
 _PORT = int(os.getenv("GSC_OAUTH_PORT", "4567"))
 
 
@@ -98,9 +98,8 @@ def main():
         open_browser=open_browser,
         bind_addr="127.0.0.1",
     )
-    with open(_TOKEN_FILE, "w") as f:
-        f.write(creds.to_json())
-    print(f"\ntoken.json saved → {os.path.abspath(_TOKEN_FILE)}")
+    config.write_private_text(_TOKEN_FILE, creds.to_json())
+    print(f"\ntoken.json saved (mode 0600) → {_TOKEN_FILE}")
     print("Run: python main.py")
 
 

@@ -7,8 +7,14 @@ Pipeline order (by design):
 
 Free Google API: https://developers.google.com/speed/docs/insights/v5/get-started
 Set PAGESPEED_API_KEY in .env (Google Cloud → enable PageSpeed Insights API → API key).
-Without a key, anonymous quota is tiny; with a key, free daily quota is usually enough
-for ~10 URLs × mobile+desktop.
+The key is required: anonymous PSI quota is small enough that the 2026-09-10 run
+got HTTP 429 on every URL. With a key the free daily quota covers ~10 URLs ×
+mobile+desktop, so a missing key skips the stage rather than burning the run.
+
+Nothing here puts a response body into its errors. PSI 429/403 bodies name the
+calling project number, and `requests` puts the full request URL — including
+`?key=` — into its own exception messages; both end up in a Markdown briefing
+that gets pasted elsewhere. Errors are collapsed to a status line instead.
 """
 from __future__ import annotations
 
@@ -24,18 +30,61 @@ log = logging.getLogger(__name__)
 
 _API = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed"
 
+# What each status code means, in words that carry no request or response detail.
+_HTTP_REASONS = {
+    400: "request rejected",
+    403: "forbidden — check the API key and that the PSI API is enabled",
+    404: "PSI could not fetch the page",
+    429: "rate limited — PSI quota exhausted",
+    500: "PSI server error",
+    503: "PSI temporarily unavailable",
+}
+
+
+class PageSpeedError(RuntimeError):
+    """A PSI failure carrying only a message that is safe to print in a report."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status: int | None = None,
+        rate_limited: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.status = status
+        self.rate_limited = rate_limited
+
+
+def _http_error(status: int) -> PageSpeedError:
+    reason = _HTTP_REASONS.get(status, "unexpected response")
+    return PageSpeedError(
+        f"HTTP {status} — {reason}",
+        status=status,
+        rate_limited=status == 429,
+    )
+
+
+def _api_key() -> str:
+    return (getattr(config, "PAGESPEED_API_KEY", "") or "").strip()
+
 
 def is_configured() -> bool:
-    return bool(getattr(config, "USE_PAGESPEED", True))
+    """True only when the stage can actually run: enabled *and* keyed."""
+    if not getattr(config, "USE_PAGESPEED", True):
+        return False
+    return bool(_api_key())
 
 
 def status_message() -> str:
     if not getattr(config, "USE_PAGESPEED", True):
         return "disabled (USE_PAGESPEED=0)"
-    key = getattr(config, "PAGESPEED_API_KEY", "") or ""
-    if key:
-        return "enabled (API key set)"
-    return "enabled (no API key — anonymous quota; set PAGESPEED_API_KEY for reliability)"
+    if not _api_key():
+        return (
+            "skipped — PAGESPEED_API_KEY not set "
+            "(anonymous PSI is rate-limited to failure; set a key in .env)"
+        )
+    return "enabled (API key set)"
 
 
 def _category_scores(lighthouse: dict) -> dict[str, int | None]:
@@ -163,18 +212,29 @@ def run_strategy(url: str, strategy: str) -> dict[str, Any]:
         ("category", "best-practices"),
         ("category", "seo"),
     ]
-    key = getattr(config, "PAGESPEED_API_KEY", "") or ""
+    key = _api_key()
     if key:
         params.append(("key", key))
 
     timeout = int(getattr(config, "PAGESPEED_TIMEOUT_SECONDS", 120))
     resp = requests.get(_API, params=params, timeout=timeout)
     if resp.status_code != 200:
-        raise RuntimeError(f"PSI HTTP {resp.status_code}: {resp.text[:300]}")
-    data = resp.json()
+        # Deliberately not resp.text: 429/403 bodies name the project number.
+        raise _http_error(resp.status_code)
+    try:
+        data = resp.json()
+    except Exception:
+        raise PageSpeedError("PSI returned a non-JSON response") from None
     if data.get("error"):
-        err = data["error"]
-        raise RuntimeError(err.get("message") or str(err))
+        # Same reasoning — the error message itself is Google-authored text
+        # about our project, so only its code crosses into the report.
+        try:
+            code = int((data["error"] or {}).get("code") or 0)
+        except (TypeError, ValueError):
+            code = 0
+        if code:
+            raise _http_error(code)
+        raise PageSpeedError("PSI reported an error")
 
     lighthouse = data.get("lighthouseResult") or {}
     scores = _category_scores(lighthouse)
@@ -202,6 +262,7 @@ def analyze_url(url: str) -> dict[str, Any]:
         "ok": False,
         "strategies": {},
         "error": None,
+        "rate_limited": False,
     }
     errors: list[str] = []
     for i, strategy in enumerate(strategies):
@@ -211,9 +272,21 @@ def analyze_url(url: str) -> dict[str, Any]:
         try:
             out["strategies"][strategy] = run_strategy(url, strategy)
             out["ok"] = True
-        except Exception as exc:
+        except PageSpeedError as exc:
             log.warning("PageSpeed %s failed for %s: %s", strategy, url, exc)
             errors.append(f"{strategy}: {exc}")
+            if exc.rate_limited:
+                # The second strategy would hit the same wall.
+                out["rate_limited"] = True
+                break
+        except Exception as exc:
+            # `requests` exception text includes the request URL, and the
+            # request URL includes the API key. Only the class name is safe.
+            log.warning(
+                "PageSpeed %s failed for %s: %s", strategy, url, type(exc).__name__
+            )
+            log.debug("PageSpeed failure detail", exc_info=True)
+            errors.append(f"{strategy}: request failed ({type(exc).__name__})")
     if errors:
         out["error"] = "; ".join(errors)
     return out
@@ -224,15 +297,21 @@ def scan_selected_urls(urls: list[str]) -> dict[str, Any]:
     Page-scan ONLY the already-selected worst pages.
     Returns a briefing-ready bundle keyed by URL.
     """
-    if not getattr(config, "USE_PAGESPEED", True):
+    if not is_configured():
+        status = status_message()
+        log.info("PageSpeed: %s — stage skipped, no URLs scanned.", status)
         return {
             "enabled": False,
-            "status": status_message(),
+            "status": status,
+            "requested": len(urls),
+            "scanned": 0,
+            "ok_count": 0,
             "pages": {},
-            "notes": ["PageSpeed disabled."],
+            "notes": [f"PageSpeed not run: {status}"],
         }
 
     pages: dict[str, dict] = {}
+    stopped_early = False
     log.info(
         "PageSpeed: scanning %d selected URL(s) only (%s)",
         len(urls),
@@ -240,18 +319,41 @@ def scan_selected_urls(urls: list[str]) -> dict[str, Any]:
     )
     for i, url in enumerate(urls, 1):
         log.info("  PSI [%d/%d] %s", i, len(urls), url)
-        pages[url] = analyze_url(url)
+        result = analyze_url(url)
+        pages[url] = result
+        if result.get("rate_limited"):
+            # One 429 means the quota is gone; the remaining URLs would each
+            # cost a request to learn the same thing.
+            stopped_early = True
+            log.warning(
+                "PageSpeed: HTTP 429 from PSI — stopping after %d of %d URL(s); "
+                "the rest are not scanned this run.",
+                i,
+                len(urls),
+            )
+            break
         if i < len(urls):
             time.sleep(float(getattr(config, "PAGESPEED_PAUSE_SECONDS", 1.5)))
 
     ok_n = sum(1 for p in pages.values() if p.get("ok"))
+    status = status_message()
+    if stopped_early:
+        status = f"{status} — stopped early after HTTP 429 (rate limit)"
+    notes = []
+    if stopped_early:
+        notes.append(
+            f"Stopped after {len(pages)} of {len(urls)} selected URL(s): PSI "
+            "returned HTTP 429 (rate limit). The remaining pages were not scanned."
+        )
     return {
         "enabled": True,
-        "status": status_message(),
-        "scanned": len(urls),
+        "status": status,
+        "requested": len(urls),
+        "scanned": len(pages),
         "ok_count": ok_n,
+        "stopped_early": stopped_early,
         "pages": pages,
-        "notes": [
+        "notes": notes + [
             "Scanned only the selected worst/improvable pages (not the whole site).",
             "Lab = Lighthouse on a simulated device; Field = Chrome UX Report when enough real-user data.",
             "Use scores + html_relevant_issues when Claude produces fresh HTML "

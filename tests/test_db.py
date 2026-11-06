@@ -7,6 +7,7 @@ from datetime import date, timedelta
 
 import pytest
 
+import analyzer
 import db
 
 
@@ -78,3 +79,102 @@ class TestPageState:
         for n in (1, 2):
             db.save_page_state("https://e.com/p/", {"clicks": n}, "r.md")
         assert db.get_page_state("https://e.com/p/")["last_metrics"] == {"clicks": 2}
+
+
+class TestModifiedPreservation:
+    """
+    B5: a partial save must not erase what a complete save already learned.
+
+    `save_page_state` wrote `last_modified_seen` unconditionally, so any run
+    that could not fetch the page (catalog stub, WP fetch failure) stored NULL
+    over the real timestamp. The next run then had nothing to compare a fresh
+    `modified` against, and edit detection could never fire — the backoff
+    reset that rewards editing a page was unreachable.
+    """
+
+    def test_stub_save_does_not_wipe_a_known_timestamp(self, temp_db):
+        db.save_page_state(
+            "https://e.com/p/", {"clicks": 1}, "r1.md",
+            wp_modified="2026-01-02T03:04:05",
+        )
+        db.save_page_state("https://e.com/p/", {"clicks": 2}, "r2.md")
+
+        state = db.get_page_state("https://e.com/p/")
+        assert state["last_modified_seen"] == "2026-01-02T03:04:05"
+        assert state["last_metrics"] == {"clicks": 2}
+        assert state["report_file"] == "r2.md"
+
+    def test_empty_string_is_treated_as_no_value(self, temp_db):
+        """Stage 2b's GSC-only stub carries `modified=""`, not None."""
+        db.save_page_state(
+            "https://e.com/p/", {"clicks": 1}, "r1.md",
+            wp_modified="2026-01-02T03:04:05",
+        )
+        db.save_page_state(
+            "https://e.com/p/", {"clicks": 2}, "r2.md", wp_modified="  ",
+        )
+
+        assert (
+            db.get_page_state("https://e.com/p/")["last_modified_seen"]
+            == "2026-01-02T03:04:05"
+        )
+
+    def test_a_real_new_timestamp_still_overwrites(self, temp_db):
+        db.save_page_state(
+            "https://e.com/p/", {"clicks": 1}, "r.md",
+            wp_modified="2026-01-02T03:04:05",
+        )
+        db.save_page_state(
+            "https://e.com/p/", {"clicks": 1}, "r.md",
+            wp_modified="2026-06-07T08:09:10",
+        )
+
+        assert (
+            db.get_page_state("https://e.com/p/")["last_modified_seen"]
+            == "2026-06-07T08:09:10"
+        )
+
+    def test_backoff_fields_survive_a_stub_save(self, temp_db):
+        db.save_page_state(
+            "https://e.com/p/", {"clicks": 1}, "r.md",
+            wp_modified="2026-01-02T03:04:05", times_suggested=3,
+        )
+        db.save_page_state(
+            "https://e.com/p/", {"clicks": 1}, "r.md", times_suggested=4,
+        )
+
+        state = db.get_page_state("https://e.com/p/")
+        assert state["times_suggested"] == 4
+        assert state["defer_until"] == (
+            date.today() + timedelta(days=db.backoff_days(4))
+        ).isoformat()
+        assert state["last_modified_seen"] == "2026-01-02T03:04:05"
+
+    def test_edit_detection_survives_an_intervening_stub_save(self, temp_db):
+        """Full save → stub save → the page is edited. It must be detected."""
+        url = "https://example.com/post/"
+        db.save_page_state(url, {"clicks": 1}, "r1.md",
+                           wp_modified="2026-01-02T03:04:05")
+        db.save_page_state(url, {"clicks": 1}, "r2.md")  # stub: no modified
+
+        selection = analyzer.select_pages(
+            [{"page": url, "clicks": 1, "impressions": 500,
+              "ctr": 0.002, "position": 18.0}],
+            wp_posts=[{
+                "id": 1, "title": "A Post", "url": url,
+                "modified": "2026-08-09T10:11:12",
+                "rankmath": {"seo_score": 30},
+            }],
+            page_states=db.get_all_states(),
+        )
+
+        assert [e["page"] for e in selection["edited"]] == [url]
+
+    def test_mark_edited_still_resets_the_backoff(self, temp_db):
+        db.save_page_state("https://e.com/p/", {"clicks": 1}, "r.md",
+                           wp_modified="2026-01-02T03:04:05", times_suggested=3)
+        db.mark_edited("https://e.com/p/", "2026-08-09T10:11:12")
+
+        state = db.get_page_state("https://e.com/p/")
+        assert state["last_modified_seen"] == "2026-08-09T10:11:12"
+        assert state["times_suggested"] == 0

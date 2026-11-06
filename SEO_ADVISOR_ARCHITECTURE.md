@@ -49,7 +49,7 @@
 1. **Zero API Expenses**: No paid Anthropic, OpenAI, or xAI API keys required. All data sources use free tiers (GSC OAuth, PageSpeed Insights API key, Bing API key, WordPress REST).
 2. **Rank Math Metadata Integrity**: Preserves native WP postmeta fields (`rank_math_title`, `rank_math_description`, `rank_math_focus_keyword`, `rank_math_robots`, `rank_math_schema_*`). Past work product remains 100% intact.
 3. **Reusing Existing Rank Math Tools**: Leverages [eager-rankmath-rest.php](file:///home/aiuser/projects/seo-advisor/wordpress-plugin/eager-rankmath-rest.php) and [wp_client.py](file:///home/aiuser/projects/seo-advisor/wp_client.py) to read and expose native Rank Math plugin scores without slow or inaccurate third-party scrapers.
-4. **Rank Math Improvable-First Prioritization**: Focuses processing energy strictly on posts scoring under **80/100** in Rank Math, sorted by score tiers (`<20` critical ➔ `20-39` poor ➔ `40-59` fair ➔ `60-79` improvable).
+4. **Neglect-first prioritization**: Ranks by missed clicks × neglect × fixability × decay. Rank Math is a modest fixability multiplier and a skip gate (default skip at score ≥80), **not** the sort key.
 5. **The Reader Outranks the Score**: Every metric in this tool is a *diagnostic*, never a specification. Rewrites are written for a person who arrived with a question. A human editor reviews each one and **rejects copy that reads as though it was written for a search engine or an answer engine** — padded word counts, repeated keywords, headings and FAQ blocks bolted on to satisfy a checklist. A page that scores 70 and reads well beats a page that scores 95 and reads like it was assembled for a crawler. Where satisfying a Rank Math rule would make a page worse to read, the rule loses.
 6. **The Live Page Is the Source of Truth**: The report carries measurements about a page, never a copy of it. The model reads the published URL for content, markup, images and styling.
 
@@ -60,7 +60,7 @@
 | Component | Current File | Status & Role in Zero-Cost Model |
 |---|---|---|
 | **Pipeline Controller** | [main.py](file:///home/aiuser/projects/seo-advisor/main.py) | **Keep & Refine**: Orchestrates stages, generates reports for chat handoff. |
-| **Improvable Analyzer** | [analyzer.py](file:///home/aiuser/projects/seo-advisor/analyzer.py) | **Keep & Refine**: Implements Rank Math score tiers + GSC opportunity ranking. |
+| **Improvable Analyzer** | [analyzer.py](file:///home/aiuser/projects/seo-advisor/analyzer.py) | **Keep & Refine**: Neglect ranker (missed clicks × neglect × fixability × decay); Rank Math is fixability/skip only. |
 | **WordPress Client** | [wp_client.py](file:///home/aiuser/projects/seo-advisor/wp_client.py) | **Keep**: Read-only. Reads content + Rank Math meta and summarizes content structure. Write-back is external (`wp.py`). |
 | **Rank Math REST Bridge** | [eager-rankmath-rest.php](file:///home/aiuser/projects/seo-advisor/wordpress-plugin/eager-rankmath-rest.php) | **Keep**: Exposes native Rank Math postmeta fields reliably via REST. |
 | **Report Generator** | [briefing.py](file:///home/aiuser/projects/seo-advisor/briefing.py) | **Primary Upgrade Focus**: Formats the Markdown payload for maximum Grok/Claude usability. |

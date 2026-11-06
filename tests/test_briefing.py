@@ -115,11 +115,64 @@ class TestDiagnosticsAreNotTargets:
     def test_prompt_tells_the_model_to_stop_if_it_cannot_read_a_page(self):
         assert "IF YOU CANNOT OPEN A PAGE" in briefing.CLAUDE_HANDOFF_PROMPT
 
+
+class TestOrderingIsDescribedTruthfully:
+    """
+    Selection ranks by missed clicks × neglect × fixability × decay. The
+    prompt used to tell the model pages were Rank Math tier-first, which made
+    it read the list order as a score ranking.
+    """
+
+    def test_prompt_does_not_claim_rank_math_tier_first(self):
+        prompt = briefing.CLAUDE_HANDOFF_PROMPT.lower()
+        for claim in ("improvable-first", "improvable first", "within a tier",
+                      "under 20 →", "tier-first", "tier first"):
+            assert claim not in prompt, claim
+
+    def test_prompt_names_the_neglect_ranker(self):
+        prompt = briefing.CLAUDE_HANDOFF_PROMPT
+        assert "missed clicks × neglect × fixability × decay" in prompt
+
+    def test_headings_do_not_claim_tier_ordering(self):
+        post = make_post("https://example.com/p/", html="<p>hi</p>", score=10)
+        out = render([make_result(post)]).lower()
+        assert "improvable first" not in out
+        assert "rankmath tiers" not in out
+
     def test_rubric_reports_measurement_before_threshold(self):
         """'102 words (Rank Math wants >=600)', not 'under 600 words'."""
         post = make_post("https://example.com/p/", html="<p>" + "w " * 50 + "</p>")
         out = render([make_result(post)])
         assert "Rank Math wants" in out
+
+
+class TestRankMathLabelsMatchTheScore:
+    """
+    A score and its tier label describe the same page. When selection ran
+    before the score was known, the report paired them anyway and printed
+    `score=10/100 (unknown RankMath score)`.
+    """
+
+    def test_late_post_score_is_never_labelled_unknown(self):
+        post = make_post("https://example.com/p/", html="<p>hi</p>", score=10)
+        stale = make_result(post)
+        # What selection wrote when the catalog missed this page.
+        stale["metrics"].update(
+            rankmath_score=None, rankmath_tier=5,
+            rankmath_tier_label="unknown RankMath score",
+        )
+
+        out = render([stale])
+
+        assert "score=10/100" in out
+        assert "under 20 (critical)" in out
+        assert "unknown RankMath score" not in out
+
+    def test_a_genuinely_unknown_score_still_says_so(self):
+        post = make_post("https://example.com/p/", html="<p>hi</p>", score=None)
+        out = render([make_result(post)])
+        assert "score unavailable" in out
+        assert "/100" not in out.split("### 1.")[1].split("- **GSC")[0]
 
 
 class TestSnapshotReference:

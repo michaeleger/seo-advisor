@@ -202,17 +202,23 @@ def collect_worst_posts(args: argparse.Namespace) -> dict:
             "deferred": [], "edited": [], "total_eligible": 0,
         }
 
-    # WordPress + RankMath first (drives improvable-first prioritization)
+    # WordPress + RankMath first (edit dates drive neglect, scores drive fixability)
     log.info("Stage 0 — WordPress catalog + RankMath scores …")
     wp_posts: list[dict] = []
     try:
-        wp_posts = wp_client.list_content_with_rankmath(max_items=300)
+        # Budgets are per content type inside the client: posts filling their
+        # budget cannot stop pages being fetched (pages were the neglected half).
+        wp_posts = wp_client.list_content_with_rankmath()
         n_scored = sum(
             1
             for p in wp_posts
             if (p.get("rankmath") or {}).get("seo_score") is not None
         )
-        log.info("  %d WP posts/pages; %d with RankMath scores.", len(wp_posts), n_scored)
+        n_pages = sum(1 for p in wp_posts if (p.get("type") or "post") == "page")
+        log.info(
+            "  %d WP items (%d posts, %d pages); %d with RankMath scores.",
+            len(wp_posts), len(wp_posts) - n_pages, n_pages, n_scored,
+        )
         if wp_posts and n_scored == 0:
             log.warning(
                 "  No real RankMath scores found. These are NOT the Post Studio "
@@ -267,6 +273,145 @@ def collect_worst_posts(args: argparse.Namespace) -> dict:
         page_states=db.get_all_states(),
         respect_defer=not args.no_cooldown,
     )
+
+
+def _is_run_fatal(exc: BaseException) -> bool:
+    """Errors that would fail every remaining page the same way."""
+    return gsc.is_auth_fatal(exc) or isinstance(exc, seo_advisor.LocalLLMConfigError)
+
+
+def enrich_selected_pages(
+    low_performers: list[dict], *, demo: bool = False, use_llm: bool = False
+) -> tuple[list[dict], list[tuple[str, dict, str | None]]]:
+    """
+    Stage 2b: WordPress + per-page GSC (+ optional local LLM) for each selected page.
+
+    One page failing is that page's problem. The loop used to re-raise any
+    RuntimeError, so a single bad page ended the run with no report for the
+    pages that were fine. Only an error that dooms every later call — revoked
+    Search Console credentials, a misconfigured LLM provider — still aborts.
+
+    Returns (results, pending_state).
+    """
+    results: list[dict] = []
+    pending_state: list[tuple[str, dict, str | None]] = []
+    for i, metrics in enumerate(low_performers, 1):
+        url = metrics["page"]
+        log.info("[%d/%d] %s", i, len(low_performers), url)
+
+        try:
+            post = wp_client.get_post_content(url)
+            if not post:
+                log.warning("  WordPress content not found — including GSC-only stub.")
+                slug = url.rstrip("/").split("/")[-1].replace("-", " ")
+                post = {
+                    "id": None,
+                    "title": slug.title() or url,
+                    "url": url,
+                    "content_plain": "",
+                    "content": wp_client.content_structure(""),
+                    "rankmath": {},
+                    "type": "unknown",
+                }
+            else:
+                log.info("  Title: %s", post["title"])
+
+            if demo:
+                queries = _demo_queries(post["title"])
+                period: dict = {}
+                devices: list = []
+                countries: list = []
+                monthly_trend: list = []
+            else:
+                enrich = gsc.collect_page_enrichment(url)
+                queries = enrich.get("queries") or []
+                period = enrich.get("period_comparison") or {}
+                devices = enrich.get("devices") or []
+                countries = enrich.get("countries") or []
+                monthly_trend = enrich.get("monthly_trend") or []
+            log.info(
+                "  queries=%d devices=%d countries=%d months=%d",
+                len(queries),
+                len(devices),
+                len(countries),
+                len(monthly_trend),
+            )
+
+            prev_state = db.get_page_state(url)
+            prev_metrics = prev_state["last_metrics"] if prev_state else None
+
+            analysis = None
+            if use_llm:
+                log.info("  Local LLM keyword pass …")
+                analysis = seo_advisor.recommend_keywords(metrics, queries, post)
+                if analysis:
+                    nkw = len(analysis.get("target_keywords") or [])
+                    log.info(
+                        "  ✓ primary=%r (%d keywords)",
+                        analysis.get("primary_keyword"),
+                        nkw,
+                    )
+                else:
+                    log.warning("  ✗ Local keyword pass failed for this post.")
+
+            # The Stage 0 catalog can miss a page; the per-page fetch above
+            # read the score off the page itself. Reconcile before the
+            # metrics→post carry-over below, or the carry-over writes the
+            # catalog's "unknown" back over a score we actually have and the
+            # report prints `score=10/100 (unknown RankMath score)`.
+            prior_score = metrics.get("rankmath_score")
+            analyzer.sync_rankmath_from_post(metrics, post)
+            synced_score = metrics.get("rankmath_score")
+            if synced_score is not None and synced_score != prior_score:
+                log.info(
+                    "  RankMath %s/100 from the post (selection had %s) — "
+                    "tier and fixability updated.",
+                    synced_score,
+                    "no score" if prior_score is None else f"{prior_score}/100",
+                )
+                skip_at = getattr(config, "RANKMATH_SKIP_SCORE", None)
+                if skip_at is not None and synced_score >= skip_at:
+                    log.info(
+                        "  Score is at/above RANKMATH_SKIP_SCORE=%d but arrived "
+                        "after selection — the page stays in this run; the next "
+                        "run skips it.",
+                        skip_at,
+                    )
+
+            # Carry RankMath priority fields onto the post for the report
+            if metrics.get("rankmath_score") is not None or metrics.get("focus_keyword"):
+                rm = dict(post.get("rankmath") or {})
+                if metrics.get("rankmath_score") is not None:
+                    rm["seo_score"] = metrics["rankmath_score"]
+                if metrics.get("focus_keyword"):
+                    rm["focus_keyword"] = metrics["focus_keyword"]
+                post["rankmath"] = rm
+
+            results.append({
+                "metrics": metrics,
+                "post": post,
+                "analysis": analysis,
+                "queries": queries,
+                "period_comparison": period,
+                "devices": devices,
+                "countries": countries,
+                "monthly_trend": monthly_trend,
+                "prev_metrics": prev_metrics,
+            })
+            # Defer the cooldown write until the report is actually written,
+            # so a crash mid-run doesn't put pages into cooldown with no
+            # delivered report.
+            pending_state.append((url, dict(metrics), post.get("modified")))
+
+        except Exception as exc:
+            if _is_run_fatal(exc):
+                log.error("  Fatal on %s: %s — aborting the run.", url, exc)
+                raise
+            log.error(
+                "  Failed on %s: %s — skipping; %d page(s) still to go.",
+                url, exc, len(low_performers) - i,
+            )
+    return results, pending_state
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -324,7 +469,11 @@ def main(argv: list[str] | None = None) -> None:
             )
         sys.exit(0)
 
-    log.info("Found %d post(s) to package for Claude (improvable-first).", len(low_performers))
+    log.info(
+        "Found %d post(s) to package for Claude (most neglected under-performance first).",
+        len(low_performers),
+    )
+    clicks_unit = analyzer.clicks_window_label()
     for i, m in enumerate(low_performers, 1):
         rm_score = m.get("rankmath_score")
         rm_s = f"{rm_score}/100" if rm_score is not None else "n/a"
@@ -339,8 +488,9 @@ def main(argv: list[str] | None = None) -> None:
             m.get("wp_title") or m["page"],
         )
         log.info(
-            "        ~%.0f clicks/yr missed · neglect x%.2f%s · seen %dx",
+            "        ~%.0f %s missed · neglect x%.2f%s · seen %dx",
             m.get("missed_clicks") or 0,
+            clicks_unit,
             m.get("neglect_multiplier") or 1.0,
             (f" · stale {m['days_stale']/365:.1f}y" if m.get("days_stale") else ""),
             m.get("times_suggested") or 0,
@@ -373,96 +523,9 @@ def main(argv: list[str] | None = None) -> None:
         config.local_llm_label(),
     )
 
-    results: list[dict] = []
-    pending_state: list[tuple[str, dict, str | None]] = []
-    for i, metrics in enumerate(low_performers, 1):
-        url = metrics["page"]
-        log.info("[%d/%d] %s", i, len(low_performers), url)
-
-        try:
-            post = wp_client.get_post_content(url)
-            if not post:
-                log.warning("  WordPress content not found — including GSC-only stub.")
-                slug = url.rstrip("/").split("/")[-1].replace("-", " ")
-                post = {
-                    "id": None,
-                    "title": slug.title() or url,
-                    "url": url,
-                    "content_plain": "",
-                    "content": wp_client.content_structure(""),
-                    "rankmath": {},
-                    "type": "unknown",
-                }
-            else:
-                log.info("  Title: %s", post["title"])
-
-            if args.demo:
-                queries = _demo_queries(post["title"])
-                period: dict = {}
-                devices: list = []
-                countries: list = []
-                monthly_trend: list = []
-            else:
-                enrich = gsc.collect_page_enrichment(url)
-                queries = enrich.get("queries") or []
-                period = enrich.get("period_comparison") or {}
-                devices = enrich.get("devices") or []
-                countries = enrich.get("countries") or []
-                monthly_trend = enrich.get("monthly_trend") or []
-            log.info(
-                "  queries=%d devices=%d countries=%d months=%d",
-                len(queries),
-                len(devices),
-                len(countries),
-                len(monthly_trend),
-            )
-
-            prev_state = db.get_page_state(url)
-            prev_metrics = prev_state["last_metrics"] if prev_state else None
-
-            analysis = None
-            if use_llm:
-                log.info("  Local LLM keyword pass …")
-                analysis = seo_advisor.recommend_keywords(metrics, queries, post)
-                if analysis:
-                    nkw = len(analysis.get("target_keywords") or [])
-                    log.info(
-                        "  ✓ primary=%r (%d keywords)",
-                        analysis.get("primary_keyword"),
-                        nkw,
-                    )
-                else:
-                    log.warning("  ✗ Local keyword pass failed for this post.")
-
-            # Carry RankMath priority fields onto the post for the report
-            if metrics.get("rankmath_score") is not None or metrics.get("focus_keyword"):
-                rm = dict(post.get("rankmath") or {})
-                if metrics.get("rankmath_score") is not None:
-                    rm["seo_score"] = metrics["rankmath_score"]
-                if metrics.get("focus_keyword"):
-                    rm["focus_keyword"] = metrics["focus_keyword"]
-                post["rankmath"] = rm
-
-            results.append({
-                "metrics": metrics,
-                "post": post,
-                "analysis": analysis,
-                "queries": queries,
-                "period_comparison": period,
-                "devices": devices,
-                "countries": countries,
-                "monthly_trend": monthly_trend,
-                "prev_metrics": prev_metrics,
-            })
-            # Defer the cooldown write until the report is actually written,
-            # so a crash mid-run doesn't put pages into cooldown with no
-            # delivered report.
-            pending_state.append((url, dict(metrics), post.get("modified")))
-
-        except RuntimeError:
-            raise
-        except Exception as exc:
-            log.error("  Unexpected error on %s: %s — skipping.", url, exc)
+    results, pending_state = enrich_selected_pages(
+        low_performers, demo=args.demo, use_llm=use_llm
+    )
 
     if not results:
         log.error("No results. Check WordPress access and GSC data.")
@@ -505,7 +568,18 @@ def main(argv: list[str] | None = None) -> None:
 
     # ── Stage 2e: PageSpeed ONLY on selected pages (after worst-N chosen) ───
     pagespeed_data: dict = {"enabled": False, "status": "skipped", "pages": {}}
-    if not args.demo and config.USE_PAGESPEED:
+    if args.demo:
+        pagespeed_data = {"enabled": False, "status": "skipped (demo)", "pages": {}}
+    elif not pagespeed.is_configured():
+        # Missing PAGESPEED_API_KEY lands here too: anonymous PSI 429s on every
+        # URL, so the stage is skipped rather than run to failure.
+        log.info("Stage 2e — PageSpeed skipped: %s", pagespeed.status_message())
+        pagespeed_data = {
+            "enabled": False,
+            "status": pagespeed.status_message(),
+            "pages": {},
+        }
+    else:
         selected_urls = []
         for r in results:
             u = (r.get("post") or {}).get("url") or (r.get("metrics") or {}).get("page")
@@ -528,14 +602,14 @@ def main(argv: list[str] | None = None) -> None:
                 u = (r.get("post") or {}).get("url") or (r.get("metrics") or {}).get("page")
                 r["pagespeed"] = (pagespeed_data.get("pages") or {}).get(u)
         except Exception as exc:
-            log.warning("  PageSpeed stage failed: %s", exc)
+            # Not str(exc): a requests error carries the request URL, key included.
+            log.warning("  PageSpeed stage failed: %s", type(exc).__name__)
+            log.debug("PageSpeed stage failure detail", exc_info=True)
             pagespeed_data = {
                 "enabled": False,
-                "status": f"error: {exc}",
+                "status": f"error: stage failed ({type(exc).__name__})",
                 "pages": {},
             }
-    elif args.demo:
-        pagespeed_data = {"enabled": False, "status": "skipped (demo)", "pages": {}}
 
     # ── Page snapshots (fallback when the model can't open a live URL) ───────
     if config.SAVE_PAGE_SNAPSHOTS:

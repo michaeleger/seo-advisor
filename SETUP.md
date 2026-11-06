@@ -3,8 +3,8 @@
 ## Pipeline (semi-automatic → Claude)
 
 ```
-1) Identify worst / most improvable pages
-   (GSC + RankMath score tiers under 20/40/60/80)
+1) Rank the most neglected under-performing pages
+   missed clicks (GSC) × neglect (time since edit) × fixability (Rank Math) × decay
         ↓
 2) Enrich ONLY those pages
    WordPress + GSC slices + Bing + Keyword Planner
@@ -19,18 +19,36 @@
 
 ---
 
-## RankMath prioritization (improvable first)
+## How pages are ranked (neglected under-performance)
 
-Posts are ordered by the **real Rank Math plugin score** (`rank_math_seo_score`),
+```
+priority = missed clicks × neglect × fixability × decay
+```
+
+| Factor | What it measures | Knobs |
+|--------|------------------|-------|
+| **missed clicks** | GSC demand the page fails to capture: clicks lost to a weak CTR for its position, plus clicks available by ranking at `TARGET_POSITION`. Sized over `DATE_RANGE_DAYS` (reported as `clicks/yr` at 365, `clicks/<N>d` otherwise). | `DATE_RANGE_DAYS`, `TARGET_POSITION` |
+| **neglect** | 1.0 for a page edited today, rising to `NEGLECT_MAX_MULTIPLIER` after `NEGLECT_FULL_DAYS` untouched. Unknown edit date = 1.0. | `NEGLECT_FULL_DAYS`, `NEGLECT_MAX_MULTIPLIER` |
+| **fixability** | Modest multiplier from the Rank Math score: 1.0 (score 100) → 2.0 (score 0); unknown = 1.3. | — |
+| **decay** | Up to 1.5× when impressions fall versus the prior adjacent window. | `DECAY_WINDOW_DAYS` |
+
+Gates before ranking: pages under `MIN_IMPRESSIONS` are skipped (undiscovered,
+not under-performing — unless `INCLUDE_ZERO_TRAFFIC_PAGES=1`); pages at or above
+`RANKMATH_SKIP_SCORE` (default 80) are skipped; `SKIP_*` filters drop site furniture.
+
+**Rank Math is not the sort key.** It measures SEO-form completeness, so a bio
+or booking page scores ~9 forever and would otherwise top every run.
+
+**Backoff:** a page suggested but not edited is deferred (`BACKOFF_DAYS`, default
+`30,60,90,180`, last value is a cap) and always comes back. A detected edit holds
+the page for `EDIT_COOLDOWN_DAYS` (default 90) so Google can reprocess it.
+
+**Catalog budgets:** `WP_CATALOG_PER_TYPE_MAX` (default 2000) applies to posts and
+pages separately; `WP_RANKMATH_MAX_ITEMS` (default 2000) caps the score overlay.
+Truncation is logged. See `.env.example` for every knob and its default.
+
+The score used is the **real Rank Math plugin score** (`rank_math_seo_score`),
 **not** the Post Studio “Audit SEO” button (that is an LLM estimate).
-
-| Priority | Score band | Intent |
-|----------|------------|--------|
-| 1st | under **20** | Critical — fix first |
-| 2nd | **20–39** | Poor |
-| 3rd | **40–59** | Fair |
-| 4th | **60–79** | Good but improvable |
-| skip | **80+** | Strong — skip by default (`RANKMATH_SKIP_SCORE=80`) |
 
 ### How we read the real score
 
@@ -56,7 +74,7 @@ WP_APP_PASSWORD=xxxx xxxx xxxx xxxx xxxx xxxx
 
 ```bash
 cd ~/projects/seo-advisor && source .venv/bin/activate
-python -c "import wp_client; ps=wp_client.list_content_with_rankmath(5); print([(p['title'][:40], p['rankmath']) for p in ps])"
+python -c "import wp_client; ps=wp_client.list_content_with_rankmath(types=('posts',), per_type_max=5); print([(p['title'][:40], p['rankmath']) for p in ps])"
 ```
 
 You should see `seo_score` integers and `score_source: rankmath_links_api`.
@@ -80,8 +98,9 @@ PAGESPEED_STRATEGIES=mobile
 # or: mobile,desktop
 ```
 
-Without a key, anonymous quota is tiny (you’ll hit HTTP 429 quickly). With a key,
-~10 mobile scans per run is fine for free tier use.
+`PAGESPEED_API_KEY` is required: without it the stage is skipped (anonymous quota
+returns HTTP 429 for every URL), and a run stops scanning at the first 429. With a
+key, ~10 mobile scans per run is fine for free tier use.
 
 ---
 
@@ -119,9 +138,14 @@ GSC = **your** performance only. It does **not** include market search volume or
 
 Open a Google Ads account, then:
 
-1. **Google Cloud** (same project as GSC is fine) → enable **Google Ads API**
-2. **Google Ads** → Tools → **API Center** → create **developer token**  
-   - Apply for **Basic** access (Test tokens cannot call Keyword Planner on real accounts)
+> **Gated:** keep this off until the Cloud project has **Basic** (or higher)
+> Google Ads API access. As of Sep 2026, access levels live on the Cloud
+> project (Google Ads API Overview), not Ads → API Center. Developer tokens
+> are optional/ignored.
+
+1. **Google Cloud** (same project as GSC / OAuth client) → enable **Google Ads API**
+2. **Google Cloud** → Google Ads API **Overview** → apply for **Basic** access  
+   (complete brand verification if asked). Ads → API Center is deprecated.
 3. Note your **customer ID** (and manager ID if using MCC)
 4. On 5by5 RDP:
 
@@ -199,6 +223,10 @@ That writes `BING_API_KEY` + `BING_SITE_URL` into `.env` and tests the connectio
 | Ads | `python authorize_ads.py` (RDP) | `ads_token.json` + env vars |
 
 Use project **`.venv`**, not `~/venv`.
+
+Token files and `.env` are written with mode **0600**. All paths (`token.json`,
+`client_secret.json`, `seo_state.db`, `reports/`) resolve against the project
+directory, so the job works from any cwd (cron, systemd, promoted copy).
 
 ---
 

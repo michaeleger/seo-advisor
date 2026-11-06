@@ -33,8 +33,9 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 import config
 
 _SCOPES = ["https://www.googleapis.com/auth/adwords"]
-_TOKEN_FILE = Path("ads_token.json")
-_PENDING_FILE = Path(".ads_oauth_pending.json")
+_TOKEN_FILE = config.PROJECT_DIR / "ads_token.json"
+_PENDING_FILE = config.PROJECT_DIR / ".ads_oauth_pending.json"
+_ENV_FILE = config.PROJECT_DIR / ".env"
 _PORT = int(os.getenv("GSC_OAUTH_PORT", "4568"))
 _REDIRECT = f"http://localhost:{_PORT}/"
 
@@ -48,9 +49,9 @@ def _secrets_file() -> str:
 
 
 def _save_env_hints(payload: dict) -> None:
-    _TOKEN_FILE.write_text(json.dumps(payload, indent=2))
+    config.write_private_text(_TOKEN_FILE, json.dumps(payload, indent=2))
     # Merge into .env without printing secrets to logs more than once
-    env_path = Path(".env")
+    env_path = _ENV_FILE
     lines = {
         "GOOGLE_ADS_CLIENT_ID": payload["client_id"],
         "GOOGLE_ADS_CLIENT_SECRET": payload["client_secret"],
@@ -85,7 +86,7 @@ def _upsert_env(path: Path, values: dict[str, str]) -> None:
                 if text and not text.endswith("\n"):
                     text += "\n"
                 text += line + "\n"
-    path.write_text(text, encoding="utf-8")
+    config.write_private_text(path, text)
 
 
 def _make_flow() -> InstalledAppFlow:
@@ -110,7 +111,8 @@ def cmd_start() -> None:
         "client_config_file": _secrets_file(),
         "scopes": _SCOPES,
     }
-    _PENDING_FILE.write_text(json.dumps(pending, indent=2))
+    # Holds the PKCE verifier — as sensitive as the code it redeems.
+    config.write_private_text(_PENDING_FILE, json.dumps(pending, indent=2))
     print("\n=== Google Ads OAuth (step 1/2) ===\n")
     print("Open this URL in a browser:\n")
     print(auth_url)

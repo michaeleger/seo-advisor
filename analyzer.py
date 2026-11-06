@@ -47,13 +47,48 @@ def _is_utility_page(url: str) -> bool:
     return False
 
 
-def _canonical_key(url: str) -> str:
-    p = urlparse(url)
+def canonical_key(url: str) -> str:
+    """
+    The one identity for a page: dedup, state lookup and persistence all use it.
+
+    Scheme, `www.`, case and trailing slash are dropped, so Search Console's
+    `https://www.example.com/post/` and WordPress's `https://example.com/post`
+    are the same page. Three separate notions of identity is how a page's
+    backoff and edit history silently failed to follow it between runs.
+
+    Idempotent: a stored key (`example.com/post`) maps to itself, so state
+    already keyed this way can be re-keyed without harm.
+    """
+    text = str(url or "").strip()
+    if "://" not in text and not text.startswith("//"):
+        text = "//" + text.lstrip("/")
+    p = urlparse(text)
     host = (p.netloc or "").lower()
     if host.startswith("www."):
         host = host[4:]
     path = (p.path or "/").rstrip("/").lower() or "/"
     return f"{host}{path}"
+
+
+_canonical_key = canonical_key
+
+
+def _states_by_key(page_states: dict[str, dict]) -> dict[str, dict]:
+    """
+    Re-key page state by canonical_key.
+
+    Legacy history can hold the same page under two spellings; the most
+    recently analysed row is the one that reflects the last suggestion.
+    """
+    out: dict[str, dict] = {}
+    for url, state in (page_states or {}).items():
+        key = canonical_key(url)
+        prev = out.get(key)
+        if prev is None or (state.get("last_analyzed") or "") > (
+            prev.get("last_analyzed") or ""
+        ):
+            out[key] = state
+    return out
 
 
 def _gsc_reasons(row: dict) -> list[str]:
@@ -115,20 +150,29 @@ def expected_ctr(position: float) -> float:
 
 
 def _days_since(timestamp: str | None) -> float | None:
-    """Days since an ISO timestamp (WordPress `modified`)."""
-    if not timestamp:
+    """Days since a WordPress `modified` stamp (ISO or MySQL format)."""
+    when = wp_client.parse_modified(timestamp)
+    if when is None:
         return None
-    text = str(timestamp).strip().replace("Z", "+00:00")
-    try:
-        when = datetime.fromisoformat(text)
-    except ValueError:
-        try:
-            when = datetime.strptime(text[:10], "%Y-%m-%d")
-        except ValueError:
-            return None
-    if when.tzinfo is not None:
-        when = when.replace(tzinfo=None)
     return max(0.0, (datetime.now() - when).total_seconds() / 86400.0)
+
+
+def _modified_changed(seen: str | None, modified: str | None) -> bool:
+    """
+    True when WordPress reports a different edit time than the one stored.
+
+    Compares instants, not strings: `2024-03-05 10:00:00` (mu-plugin, MySQL)
+    and `2024-03-05T10:00:00` (wp/v2) are the same edit, and a string compare
+    called that an edit on every run. Only when a side will not parse does
+    this fall back to comparing the text.
+    """
+    if not seen or not modified:
+        return False
+    seen_at = wp_client.parse_modified(seen)
+    modified_at = wp_client.parse_modified(modified)
+    if seen_at is not None and modified_at is not None:
+        return seen_at != modified_at
+    return str(seen).strip() != str(modified).strip()
 
 
 def neglect_multiplier(days_stale: float | None) -> float:
@@ -142,6 +186,120 @@ def neglect_multiplier(days_stale: float | None) -> float:
     full = max(1, getattr(config, "NEGLECT_FULL_DAYS", 730))
     ceiling = float(getattr(config, "NEGLECT_MAX_MULTIPLIER", 3.0))
     return 1.0 + (ceiling - 1.0) * min(days_stale / full, 1.0)
+
+
+def fixability_multiplier(score: int | None) -> float:
+    """
+    How much obvious Rank Math work is sitting on the page.
+
+    A score of 10 means almost every mechanical fix is still available; 90
+    means there is little left to do. An unknown score is treated as
+    mid-range rather than as "nothing to fix", because not knowing is not
+    evidence of quality.
+    """
+    if score is None:
+        return 1.3
+    return 1.0 + (100 - max(0, min(100, int(score)))) / 100.0
+
+
+def resolve_rankmath(score: int | None) -> dict:
+    """
+    Turn a Rank Math score into the fields the pipeline carries for it.
+
+    One helper for both paths — selection off the WordPress catalog, and the
+    per-page fetch in Stage 2b that finds a score the catalog missed. Two
+    resolutions is how a page ended up reported as `score=10/100 (unknown
+    RankMath score)`.
+    """
+    normalized = None
+    if score is not None:
+        try:
+            normalized = max(0, min(100, int(score)))
+        except (TypeError, ValueError):
+            normalized = None
+    tier = wp_client.score_tier(normalized)
+    return {
+        "rankmath_score": normalized,
+        "rankmath_tier": tier,
+        "rankmath_tier_label": wp_client.tier_label(tier),
+        "fixability_multiplier": fixability_multiplier(normalized),
+    }
+
+
+_RANKMATH_REASON_PREFIX = "RankMath "
+_FALLBACK_REASON = "Low traffic opportunity"
+
+
+def _rankmath_reason(resolved: dict) -> str | None:
+    if resolved.get("rankmath_score") is None:
+        return None
+    return (
+        f"{_RANKMATH_REASON_PREFIX}{resolved['rankmath_score']}/100 — "
+        f"{resolved['rankmath_tier_label']}"
+    )
+
+
+def _with_rankmath_reason(reasons: list[str] | None, resolved: dict) -> list[str]:
+    """Replace the Rank Math line in `reasons` so it matches `resolved`."""
+    new_line = _rankmath_reason(resolved)
+    out: list[str] = []
+    placed = False
+    for reason in reasons or []:
+        if reason.startswith(_RANKMATH_REASON_PREFIX):
+            if new_line and not placed:
+                out.append(new_line)
+                placed = True
+            continue
+        if reason == _FALLBACK_REASON and new_line:
+            continue
+        out.append(reason)
+    if new_line and not placed:
+        out.append(new_line)
+    return out or [_FALLBACK_REASON]
+
+
+def sync_rankmath_from_post(metrics: dict, post: dict | None) -> dict:
+    """
+    Reconcile a selected page's Rank Math fields with the score on its post.
+
+    Selection reads the WordPress catalog, which can miss a page; the
+    per-page fetch in Stage 2b then reads the score off the page itself. The
+    post wins on disagreement — it is the page, the catalog is a listing of
+    it — and an absent post score changes nothing.
+
+    Priority is recomputed from the multipliers already on `metrics` so the
+    number stays consistent with the fixability it now claims. Selection is
+    NOT re-ordered: the page list for this run was already chosen, and
+    re-ranking mid-run would mean the report disagrees with the run that
+    produced it.
+
+    Mutates and returns `metrics`.
+    """
+    post_score = ((post or {}).get("rankmath") or {}).get("seo_score")
+    if post_score is None:
+        return metrics
+    try:
+        post_score = int(post_score)
+    except (TypeError, ValueError):
+        return metrics
+
+    resolved = resolve_rankmath(post_score)
+    if metrics.get("rankmath_score") == resolved["rankmath_score"] and metrics.get(
+        "rankmath_tier_label"
+    ) == resolved["rankmath_tier_label"]:
+        return metrics
+
+    metrics.update(resolved)
+    if "reasons" in metrics:
+        metrics["reasons"] = _with_rankmath_reason(metrics["reasons"], resolved)
+    if "missed_clicks" in metrics:
+        metrics["priority"] = (
+            float(metrics.get("missed_clicks") or 0.0)
+            * float(metrics.get("neglect_multiplier") or 1.0)
+            * resolved["fixability_multiplier"]
+            * float(metrics.get("decay_multiplier") or 1.0)
+        )
+    return metrics
 
 
 def missed_clicks(row: dict) -> dict:
@@ -170,6 +328,17 @@ def missed_clicks(row: dict) -> dict:
     }
 
 
+def clicks_window_label() -> str:
+    """
+    Unit for a missed-clicks figure.
+
+    `missed_clicks` is sized from impressions over DATE_RANGE_DAYS and is not
+    annualised, so "clicks/yr" is only true for a 365-day window.
+    """
+    days = int(config.DATE_RANGE_DAYS)
+    return "clicks/yr" if days == 365 else f"clicks/{days}d"
+
+
 def priority_score(row: dict, *, days_stale: float | None, score: int | None) -> dict:
     """
     Rank by neglected under-performance rather than by Rank Math score.
@@ -181,7 +350,7 @@ def priority_score(row: dict, *, days_stale: float | None, score: int | None) ->
     """
     missed = missed_clicks(row)
     neglect = neglect_multiplier(days_stale)
-    fixability = 1.0 + ((100 - score) / 100.0 if score is not None else 0.3)
+    fixability = fixability_multiplier(score)
 
     decay = 1.0
     change = row.get("decay_ratio")
@@ -238,9 +407,9 @@ def select_pages(
     is reported in "deferred" so the backlog stays visible, and it returns
     with its priority intact.
     """
-    excluded_urls = excluded_urls or set()
-    page_states = page_states or {}
-    site = (config.GSC_SITE_URL or "").rstrip("/")
+    excluded_keys = {canonical_key(u) for u in excluded_urls or ()}
+    state_by_key = _states_by_key(page_states or {})
+    site =(config.GSC_SITE_URL or "").rstrip("/")
     skip_at = getattr(config, "RANKMATH_SKIP_SCORE", 80)
     min_impressions = getattr(config, "MIN_IMPRESSIONS", 10)
     include_zero = getattr(config, "INCLUDE_ZERO_TRAFFIC_PAGES", False)
@@ -259,12 +428,12 @@ def select_pages(
     skipped_utility: list[str] = []
     for row in page_metrics:
         page = row["page"]
-        if page in excluded_urls or page.rstrip("/") == site:
+        key = canonical_key(page)
+        if key in excluded_keys or page.rstrip("/") == site:
             continue
         if _is_utility_page(page):
             skipped_utility.append(page)
             continue
-        key = _canonical_key(page)
         prev = best_by_key.get(key)
         if prev is None or row["impressions"] > prev["impressions"]:
             best_by_key[key] = row
@@ -294,14 +463,13 @@ def select_pages(
         rm = (post or {}).get("rankmath") or {}
         score = rm.get("seo_score")
         page = row["page"]
-        state = page_states.get(page) or {}
+        state = state_by_key.get(key) or {}
         modified = _wp_modified(post)
 
         # Edited since we last suggested it: capacity arrived and it got
         # attention. Hold it for a re-rank period rather than re-judging a
         # fix Google has not reprocessed yet.
-        seen = state.get("last_modified_seen")
-        if state and seen and modified and modified != seen:
+        if state and _modified_changed(state.get("last_modified_seen"), modified):
             edited.append({"page": page, "modified": modified,
                            "wp_title": (post or {}).get("title") or ""})
             continue
@@ -332,38 +500,36 @@ def select_pages(
             score=score,
         )
 
+        resolved = resolve_rankmath(score)
         reasons: list[str] = []
+        clicks_unit = clicks_window_label()
         if scoring["missed_ctr_gap"] >= 1:
             reasons.append(
-                f"~{scoring['missed_ctr_gap']:.0f} clicks/yr lost to weak CTR "
+                f"~{scoring['missed_ctr_gap']:.0f} {clicks_unit} lost to weak CTR "
                 f"for its position ({row['position']:.1f})"
             )
         if scoring["missed_position_gap"] >= 1:
             reasons.append(
-                f"~{scoring['missed_position_gap']:.0f} clicks/yr available by "
+                f"~{scoring['missed_position_gap']:.0f} {clicks_unit} available by "
                 f"ranking better than {row['position']:.1f}"
             )
         if days_stale is not None and days_stale > 180:
             reasons.append(f"Not edited in {days_stale/365:.1f} years")
         if scoring["decay_multiplier"] > 1.0:
             reasons.append("Impressions falling vs the prior window")
-        if score is not None:
-            reasons.append(
-                f"RankMath {score}/100 — {wp_client.tier_label(wp_client.score_tier(score))}"
-            )
+        rankmath_line = _rankmath_reason(resolved)
+        if rankmath_line:
+            reasons.append(rankmath_line)
         if row.get("_from_wp_only"):
             reasons.append("No Search Console traffic yet")
         if not reasons:
-            reasons.append("Low traffic opportunity")
+            reasons.append(_FALLBACK_REASON)
 
-        tier = wp_client.score_tier(score)
         candidates.append({
             **row,
             **scoring,
+            **resolved,
             "reasons": reasons,
-            "rankmath_score": score,
-            "rankmath_tier": tier,
-            "rankmath_tier_label": wp_client.tier_label(tier),
             "focus_keyword": rm.get("focus_keyword") or "",
             "gsc_opportunity": _gsc_opportunity(row),
             "wp_title": (post or {}).get("title") or "",

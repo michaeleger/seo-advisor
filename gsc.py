@@ -7,39 +7,71 @@ from datetime import date, timedelta
 import os
 from typing import Any
 
+from google.auth.exceptions import RefreshError
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
 import config
 
 log = logging.getLogger(__name__)
 
 _SCOPES = ["https://www.googleapis.com/auth/webmasters.readonly"]
-_TOKEN_FILE = "token.json"
+_TOKEN_FILE = str(config.PROJECT_DIR / "token.json")
 _service = None
+
+# googleapiclient retries 429, 5xx and connection resets itself, with
+# exponential backoff, when asked to. Without it one transient blip on one of
+# the ~5 per-page calls dropped that page from the run.
+_NUM_RETRIES = 3
+
+
+class GSCAuthError(RuntimeError):
+    """Credentials are missing, revoked or refused — every later call fails too."""
+
+
+def is_auth_fatal(exc: BaseException) -> bool:
+    """
+    True when an error means no further Search Console call can succeed.
+
+    That is the one failure worth aborting a run for. Anything else — a
+    timeout, a 500 that outlived the retries — belongs to one page.
+    """
+    if isinstance(exc, (GSCAuthError, RefreshError)):
+        return True
+    if isinstance(exc, FileNotFoundError) and os.path.basename(_TOKEN_FILE) in str(exc):
+        return True
+    if isinstance(exc, HttpError):
+        status = getattr(exc, "status_code", None) or getattr(
+            getattr(exc, "resp", None), "status", None
+        )
+        try:
+            return int(status) in (401, 403)
+        except (TypeError, ValueError):
+            return False
+    return False
 
 
 def _get_credentials() -> Credentials:
     if not os.path.exists(_TOKEN_FILE):
         raise FileNotFoundError(
-            "token.json not found. Run `python authorize.py` first "
-            "(from an RDP desktop session on 5by5)."
+            f"token.json not found at {_TOKEN_FILE}. Run `python authorize.py` "
+            "first (from an RDP desktop session on 5by5)."
         )
     creds = Credentials.from_authorized_user_file(_TOKEN_FILE, _SCOPES)
     if creds.expired and creds.refresh_token:
         try:
             creds.refresh(Request())
         except Exception as exc:
-            raise RuntimeError(
+            raise GSCAuthError(
                 "Google OAuth token refresh failed (invalid_grant or revoked). "
                 "Re-run `python authorize.py` on 5by5 (RDP desktop) to recreate token.json. "
                 f"Original error: {exc}"
             ) from exc
-        with open(_TOKEN_FILE, "w") as f:
-            f.write(creds.to_json())
+        config.write_private_text(_TOKEN_FILE, creds.to_json())
     if not creds.valid:
-        raise RuntimeError(
+        raise GSCAuthError(
             "Google OAuth credentials are not valid. Run `python authorize.py` "
             "on 5by5 (RDP desktop) to re-authenticate Search Console access."
         )
@@ -55,16 +87,64 @@ def _get_service():
     return _service
 
 
+# Search Console publishes "final" data on a ~3 day lag. Every window anchors
+# to the same lagged day so two windows are always comparable.
+_DATA_LAG_DAYS = 3
+# Search Console retains roughly 16 months. Staying a couple of months inside
+# that is the difference between a prior window that has data and one that is
+# structurally empty — and an empty prior renders as "impr 0→N", growth that
+# never happened.
+_RETENTION_DAYS = 14 * 30
+
+
+def _anchor_end() -> date:
+    """Most recent day with final data."""
+    return date.today() - timedelta(days=_DATA_LAG_DAYS)
+
+
 def _date_range() -> tuple[str, str]:
-    end = date.today() - timedelta(days=3)
+    end = _anchor_end()
     start = end - timedelta(days=config.DATE_RANGE_DAYS)
     return start.isoformat(), end.isoformat()
+
+
+def comparison_window_days() -> int:
+    """
+    Length of each half of a period-over-period comparison.
+
+    Sized from DECAY_WINDOW_DAYS, not DATE_RANGE_DAYS: two adjacent 365-day
+    windows reach ~2 years back, past retention, so the prior half comes back
+    empty for every page and every page looks like it grew from zero. Clamped
+    so both halves plus the data lag stay inside _RETENTION_DAYS.
+    """
+    window = int(getattr(config, "DECAY_WINDOW_DAYS", 90) or 90)
+    ceiling = max(1, (_RETENTION_DAYS - _DATA_LAG_DAYS) // 2)
+    return max(1, min(window, ceiling))
+
+
+def _comparison_ranges() -> tuple[tuple[str, str], tuple[str, str], int]:
+    """
+    Two adjacent equal-length windows: (current, previous, days).
+
+    previous.end is the day before current.start, so the halves never share a
+    day and the delta between them is a real period-over-period change.
+    """
+    days = comparison_window_days()
+    cur_end = _anchor_end()
+    cur_start = cur_end - timedelta(days=days - 1)
+    prev_end = cur_start - timedelta(days=1)
+    prev_start = prev_end - timedelta(days=days - 1)
+    return (
+        (cur_start.isoformat(), cur_end.isoformat()),
+        (prev_start.isoformat(), prev_end.isoformat()),
+        days,
+    )
 
 
 def _prior_date_range() -> tuple[str, str]:
-    end = date.today() - timedelta(days=3) - timedelta(days=config.DATE_RANGE_DAYS)
-    start = end - timedelta(days=config.DATE_RANGE_DAYS)
-    return start.isoformat(), end.isoformat()
+    """The window immediately before the current comparison window."""
+    _, previous, _ = _comparison_ranges()
+    return previous
 
 
 def _query(body: dict[str, Any]) -> list[dict]:
@@ -72,7 +152,7 @@ def _query(body: dict[str, Any]) -> list[dict]:
         _get_service()
         .searchanalytics()
         .query(siteUrl=config.GSC_SITE_URL, body=body)
-        .execute()
+        .execute(num_retries=_NUM_RETRIES)
     )
     return resp.get("rows") or []
 
@@ -171,7 +251,7 @@ def get_page_decay(window_days: int | None = None) -> dict[str, float]:
     Returns {page_url: fractional change}, negative meaning decline.
     """
     window = int(window_days or getattr(config, "DECAY_WINDOW_DAYS", 90))
-    anchor = date.today() - timedelta(days=3)
+    anchor = _anchor_end()
     cur_start = anchor - timedelta(days=window)
     prev_start = cur_start - timedelta(days=window)
 
@@ -217,8 +297,7 @@ def get_page_queries(page_url: str, limit: int = 50) -> list[dict]:
 
 
 def get_page_period_comparison(page_url: str) -> dict[str, Any]:
-    cur_start, cur_end = _date_range()
-    prev_start, prev_end = _prior_date_range()
+    (cur_start, cur_end), (prev_start, prev_end), window_days = _comparison_ranges()
 
     def _one(start: str, end: str) -> dict:
         rows = _query(
@@ -244,8 +323,12 @@ def get_page_period_comparison(page_url: str) -> dict[str, Any]:
         return (cur - prev) / prev
 
     return {
-        "current_window": {"start": cur_start, "end": cur_end, **current},
-        "previous_window": {"start": prev_start, "end": prev_end, **previous},
+        "current_window": {
+            "start": cur_start, "end": cur_end, "days": window_days, **current
+        },
+        "previous_window": {
+            "start": prev_start, "end": prev_end, "days": window_days, **previous
+        },
         "delta": {
             "clicks": current["clicks"] - previous["clicks"],
             "impressions": current["impressions"] - previous["impressions"],
@@ -562,14 +645,22 @@ def collect_page_enrichment(page_url: str) -> dict[str, Any]:
 def get_site_context() -> dict[str, Any]:
     """Site-level GSC context (once per run)."""
     cur_start, cur_end = _date_range()
-    prev_start, prev_end = _prior_date_range()
+    (cmp_start, cmp_end), (prev_start, prev_end), cmp_days = _comparison_ranges()
     return {
         "date_range": {
+            # Headline metrics cover the full DATE_RANGE_DAYS window; the
+            # period-over-period pair is shorter so the prior half is inside
+            # Search Console retention and actually has rows.
             "current": {"start": cur_start, "end": cur_end, "days": config.DATE_RANGE_DAYS},
+            "comparison_current": {
+                "start": cmp_start,
+                "end": cmp_end,
+                "days": cmp_days,
+            },
             "previous": {
                 "start": prev_start,
                 "end": prev_end,
-                "days": config.DATE_RANGE_DAYS,
+                "days": cmp_days,
             },
         },
         "query_opportunities": get_site_query_opportunities(),

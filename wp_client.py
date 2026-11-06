@@ -4,6 +4,7 @@ from __future__ import annotations
 import html as html_lib
 import logging
 import re
+from datetime import datetime
 from typing import Any
 from urllib.parse import urlparse
 
@@ -112,6 +113,53 @@ def content_structure(content_html: str, *, site_url: str | None = None) -> dict
     }
 
 
+# ── `modified` timestamps ────────────────────────────────────────────────────
+# wp/v2 serialises `modified` as ISO 8601 (`2024-03-05T10:00:00`); the
+# mu-plugin used to hand back the raw MySQL column (`2024-03-05 10:00:00`).
+# Same instant, different string — and edit detection compared strings, so
+# every page reaching the ranker through a plugin stub looked "edited", was
+# pulled from selection, and ping-ponged after mark_edited stored the other
+# format. Every ingest point normalises, and comparisons parse.
+
+
+def parse_modified(raw: Any) -> datetime | None:
+    """
+    Parse a WordPress `modified` stamp in either wire format.
+
+    Returns a naive datetime on the stamp's own wall clock: wp/v2 `modified`
+    is site-local with no offset, so an offset (when present) is dropped
+    rather than converted — converting would move one side of a comparison
+    and not the other.
+    """
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    text = text.replace("Z", "+00:00")
+    try:
+        when = datetime.fromisoformat(text)
+    except ValueError:
+        try:
+            when = datetime.strptime(text[:10], "%Y-%m-%d")
+        except ValueError:
+            return None
+    return when.replace(tzinfo=None, microsecond=0)
+
+
+def normalize_modified(raw: Any) -> str:
+    """
+    Canonical `YYYY-MM-DDTHH:MM:SS` for any parseable stamp, "" for none.
+
+    An unparseable value is passed through stripped rather than dropped: it
+    is still the best record of what WordPress said.
+    """
+    when = parse_modified(raw)
+    if when is not None:
+        return when.isoformat(timespec="seconds")
+    return str(raw or "").strip()
+
+
 def _slug_from_url(page_url: str) -> str | None:
     path = urlparse(page_url).path.rstrip("/")
     if not path:
@@ -180,7 +228,7 @@ def _to_post_dict(p: dict) -> dict:
         "title": title,
         "url": p.get("link") or "",
         # Drives the neglect multiplier: how long since anyone touched this.
-        "modified": p.get("modified") or "",
+        "modified": normalize_modified(p.get("modified")),
         "content_plain": _strip_html(content_html)[:3000],
         # Kept so the run can drop a snapshot beside the report. The briefing
         # itself never carries article text — see content_structure().
@@ -209,11 +257,46 @@ def _fetch_by_slug(endpoint: str, slug: str) -> dict | None:
     return items[0]
 
 
+_DUPLICATE_SUFFIX_RE = re.compile(r"-\d+")
+
+
+def slug_match(wanted: str, candidate: str) -> str | None:
+    """
+    How a search-result slug relates to the slug we asked for, or None.
+
+    Only two relations bind:
+      exact             the same slug
+      duplicate-suffix  one is the other plus WordPress's `-2`-style
+                        disambiguator, split at a hyphen
+
+    Substring matching bound `classic-chicken-soup` to `chicken-soup` (and the
+    reverse), so a report could carry one page's metrics against another
+    page's content. A shared hyphen-delimited word run is not identity either
+    — `classic-chicken-soup` ends in `-chicken-soup` and is still a different
+    recipe — so the remainder must be the numeric suffix, nothing else.
+    """
+    wanted = (wanted or "").lower()
+    candidate = (candidate or "").lower()
+    if not wanted or not candidate:
+        return None
+    if wanted == candidate:
+        return "exact"
+    longer, shorter = (
+        (wanted, candidate) if len(wanted) > len(candidate) else (candidate, wanted)
+    )
+    if longer.startswith(shorter) and _DUPLICATE_SUFFIX_RE.fullmatch(
+        longer[len(shorter):]
+    ):
+        return "duplicate-suffix"
+    return None
+
+
 def get_post_content(page_url: str) -> dict | None:
     """Fetch one WordPress post/page by URL (includes Rank Math when exposed)."""
     slug = _slug_from_url(page_url)
     if not slug:
         return None
+    slug = slug.lower()
 
     try:
         for endpoint in ("posts", "pages"):
@@ -235,21 +318,23 @@ def get_post_content(page_url: str) -> dict | None:
             resp.raise_for_status()
             for item in resp.json():
                 item_slug = (item.get("slug") or "").lower()
-                if not item_slug:
-                    continue
-                if (
-                    item_slug == slug
-                    or item_slug.endswith(slug)
-                    or slug.endswith(item_slug)
-                    or slug in item_slug
-                    or item_slug in slug
-                ):
+                link_slug = (_slug_from_url(item.get("link") or "") or "").lower()
+                for candidate in (item_slug, link_slug):
+                    how = slug_match(slug, candidate)
+                    if how is None:
+                        continue
+                    if how != "exact":
+                        log.info(
+                            "Slug fallback: %s resolved to %s slug %r (%s) — "
+                            "verify this is the same page.",
+                            page_url, endpoint[:-1], candidate, how,
+                        )
                     return _to_post_dict(item)
-                link_slug = _slug_from_url(item.get("link") or "")
-                if link_slug and (
-                    link_slug == slug or slug in link_slug or link_slug in slug
-                ):
-                    return _to_post_dict(item)
+                log.debug(
+                    "Slug fallback: search hit %r rejected for %s (not an "
+                    "exact or duplicate-suffix match).",
+                    item_slug, page_url,
+                )
         return None
     except Exception as exc:
         log.warning("Could not fetch post for %s: %s", page_url, exc)
@@ -308,6 +393,12 @@ def fetch_rankmath_scores_via_etbh_endpoint(max_items: int = 500) -> dict[int, d
                 "seo_score": score,
                 "title": row.get("title") or "",
                 "url": row.get("url") or "",
+                # Kept for catalog stubs: without it a RankMath-only row has
+                # no edit date at all and cannot be scored for neglect.
+                "modified": normalize_modified(
+                    row.get("modified") or row.get("post_modified")
+                ),
+                "type": row.get("type") or "",
                 "focus_keyword": row.get("focus_keyword")
                 or rm.get("focus_keyword")
                 or "",
@@ -403,6 +494,9 @@ def fetch_rankmath_scores_via_links_api(max_items: int = 500) -> dict[int, dict]
                     "seo_score": score,
                     "title": html_lib.unescape(re.sub(r"<[^>]+>", "", str(title))).strip(),
                     "url": url,
+                    "modified": normalize_modified(
+                        row.get("modified") or row.get("post_modified")
+                    ),
                     "focus_keyword": row.get("focus_keyword")
                     or row.get("rank_math_focus_keyword")
                     or "",
@@ -440,76 +534,152 @@ def fetch_rankmath_scores(max_items: int = 500) -> dict[int, dict]:
     return {}
 
 
+# ── Catalog paging ───────────────────────────────────────────────────────────
+# Each content type gets its OWN budget. Sharing one budget across posts and
+# pages means a site with more posts than the cap never reaches `pages` at
+# all: every page then arrives without `modified` and without a Rank Math
+# score, so neglect_multiplier collapses to 1.0 and the most neglected pages
+# on the site are the ones that can never be ranked.
+_CATALOG_PAGE_SIZE = 100
+# Safety valve against a server that never stops paginating.
+_MAX_CATALOG_REQUESTS = 100
+
+
+def _with_rankmath_score(post: dict, score_by_id: dict[int, dict]) -> dict:
+    """Overlay a real RankMath plugin score onto a WP REST item."""
+    pid = post.get("id")
+    sc = score_by_id.get(int(pid)) if pid is not None else None
+    if sc:
+        rm = dict(post.get("rankmath") or {})
+        if sc.get("seo_score") is not None:
+            rm["seo_score"] = sc["seo_score"]
+        if sc.get("focus_keyword"):
+            rm["focus_keyword"] = sc["focus_keyword"]
+        rm["score_source"] = "rankmath_links_api"
+        post["rankmath"] = rm
+    elif (post.get("rankmath") or {}).get("seo_score") is not None:
+        post["rankmath"]["score_source"] = "wp_rest_meta"
+    return post
+
+
+def _fetch_type_catalog(
+    endpoint: str, budget: int, score_by_id: dict[int, dict]
+) -> tuple[list[dict], bool]:
+    """
+    Page one content type to exhaustion (or to `budget`).
+
+    Ordered `modified ASC` — oldest first. The ranker exists to surface
+    neglected content, so if a budget ever does bite, the items it drops must
+    be the freshly-edited ones, which are the least likely to be selected.
+    Ordering newest-first drops exactly the pages this tool is looking for.
+
+    Returns (items, truncated).
+    """
+    if budget <= 0:
+        return [], True
+
+    base = config.WP_SITE_URL.rstrip("/")
+    out: list[dict] = []
+    page = 1
+    truncated = False
+    while True:
+        # Fixed page size. Shrinking it to fit the remaining budget while the
+        # page number keeps climbing changes what "page N" means mid-walk and
+        # skips items outright.
+        resp = _session_get(
+            f"{base}/wp-json/wp/v2/{endpoint}",
+            params={
+                "per_page": _CATALOG_PAGE_SIZE,
+                "page": page,
+                "status": "publish",
+                "_fields": "id,title,content,link,meta,type,slug,rankmath,modified",
+                "orderby": "modified",
+                "order": "asc",
+            },
+            timeout=40,
+        )
+        # WordPress answers 400 for a page past the end of the result set.
+        if resp.status_code == 400 and page > 1:
+            break
+        resp.raise_for_status()
+        batch = resp.json()
+        if not batch:
+            break
+        for item in batch:
+            out.append(_with_rankmath_score(_to_post_dict(item), score_by_id))
+        total_pages = int(resp.headers.get("X-WP-TotalPages") or 1)
+        if page >= total_pages:
+            break
+        if len(out) >= budget or page >= _MAX_CATALOG_REQUESTS:
+            truncated = True
+            break
+        page += 1
+    if len(out) > budget:
+        # Oldest-first ordering means the overflow we drop is the freshest.
+        del out[budget:]
+        truncated = True
+    return out, truncated
+
+
 def list_content_with_rankmath(
-    max_items: int = 200,
     *,
     types: tuple[str, ...] = ("posts", "pages"),
+    per_type_max: int | None = None,
+    rankmath_max_items: int | None = None,
 ) -> list[dict]:
     """
     List published posts/pages with Rank Math fields.
+
+    `per_type_max` is a per-content-type budget, not a total: posts filling
+    their budget can never stop pages from being fetched. Any truncation is
+    logged rather than silently accepted.
 
     Score sources (in order):
       1) Authenticated RankMath /links/posts  → real plugin score
       2) REST rankmath field / post meta       → needs mu-plugin or public meta
     """
-    base = config.WP_SITE_URL.rstrip("/")
-    score_by_id = fetch_rankmath_scores(max_items=max(max_items, 500))
+    if per_type_max is None:
+        per_type_max = int(getattr(config, "WP_CATALOG_PER_TYPE_MAX", 2000))
+    if rankmath_max_items is None:
+        rankmath_max_items = int(getattr(config, "WP_RANKMATH_MAX_ITEMS", 2000))
+
+    score_by_id = fetch_rankmath_scores(max_items=rankmath_max_items)
 
     out: list[dict] = []
     for endpoint in types:
-        page = 1
-        while len(out) < max_items:
-            per_page = min(100, max_items - len(out))
-            resp = _session_get(
-                f"{base}/wp-json/wp/v2/{endpoint}",
-                params={
-                    "per_page": per_page,
-                    "page": page,
-                    "status": "publish",
-                    "_fields": "id,title,content,link,meta,type,slug,rankmath,modified",
-                    "orderby": "modified",
-                    "order": "desc",
-                },
-                timeout=40,
+        items, truncated = _fetch_type_catalog(endpoint, per_type_max, score_by_id)
+        out.extend(items)
+        log.info("  WP catalog: %d %s (oldest-modified first).", len(items), endpoint)
+        if truncated:
+            log.warning(
+                "  WP catalog TRUNCATED for %s at %d items "
+                "(WP_CATALOG_PER_TYPE_MAX). Recently-modified %s beyond the "
+                "budget were not fetched; raise the budget to see them.",
+                endpoint, per_type_max, endpoint,
             )
-            if resp.status_code == 400 and page > 1:
-                break
-            resp.raise_for_status()
-            batch = resp.json()
-            if not batch:
-                break
-            for item in batch:
-                post = _to_post_dict(item)
-                pid = post.get("id")
-                if pid is not None and int(pid) in score_by_id:
-                    sc = score_by_id[int(pid)]
-                    rm = dict(post.get("rankmath") or {})
-                    if sc.get("seo_score") is not None:
-                        rm["seo_score"] = sc["seo_score"]
-                    if sc.get("focus_keyword"):
-                        rm["focus_keyword"] = sc["focus_keyword"]
-                    rm["score_source"] = "rankmath_links_api"
-                    post["rankmath"] = rm
-                elif (post.get("rankmath") or {}).get("seo_score") is not None:
-                    post["rankmath"]["score_source"] = "wp_rest_meta"
-                out.append(post)
-            total_pages = int(resp.headers.get("X-WP-TotalPages") or 1)
-            if page >= total_pages:
-                break
-            page += 1
 
-    # Include any scored posts from RankMath API missing from the WP list slice
+    # Scored posts RankMath knows about but the WP listing did not return.
+    # These are stubs: no body, but they carry `modified` when the score
+    # endpoint supplies it, so neglect is still measurable for them.
     seen_ids = {p.get("id") for p in out}
+    stubs = 0
+    dropped_stubs = 0
     for pid, sc in score_by_id.items():
-        if pid in seen_ids or len(out) >= max_items:
+        if pid in seen_ids:
             continue
         if not sc.get("url") and not sc.get("title"):
+            continue
+        if stubs >= per_type_max:
+            dropped_stubs += 1
             continue
         out.append(
             {
                 "id": pid,
                 "title": sc.get("title") or f"Post {pid}",
                 "url": sc.get("url") or "",
+                # Absent `modified` stays absent: neglect_multiplier treats
+                # unknown as neutral, which beats inventing a fresh date.
+                "modified": normalize_modified(sc.get("modified")),
                 "content_plain": "",
                 "content": content_structure(""),
                 "rankmath": {
@@ -519,11 +689,17 @@ def list_content_with_rankmath(
                     "meta_description": "",
                     "score_source": "rankmath_links_api",
                 },
-                "type": "post",
+                "type": sc.get("type") or "post",
                 "slug": _slug_from_url(sc.get("url") or "") or "",
             }
         )
-    return out[:max_items]
+        stubs += 1
+    if dropped_stubs:
+        log.warning(
+            "  %d RankMath-only post(s) dropped at the stub budget (%d).",
+            dropped_stubs, per_type_max,
+        )
+    return out
 
 
 def rankmath_score_available(posts: list[dict]) -> bool:
