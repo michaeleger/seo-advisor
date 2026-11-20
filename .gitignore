@@ -19,6 +19,8 @@ credentials.json
 *.pem
 *.key
 .oauth_state
+# PKCE verifier while `python authorize_ads.py --start` is unfinished
+.ads_oauth_pending.json
 # One-shot OAuth helper artifacts (contain client_id + stale state/PKCE)
 ads_oauth_url.txt
 open_ads_oauth.html

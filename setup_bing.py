@@ -3,16 +3,17 @@
 One-time Bing Webmaster setup (free).
 
 1. Open https://www.bing.com/webmasters and sign in
-2. Add/verify https://www.eagertobehealthy.com (or your domain)
+2. Add and verify your site
 3. Settings (gear) → API Access → Generate / copy API key
-4. Run:
+4. From this project, with the virtualenv active:
 
-     cd ~/projects/seo-advisor && source .venv/bin/activate
-     python setup_bing.py YOUR_API_KEY
-     # optional site URL:
-     python setup_bing.py YOUR_API_KEY https://www.eagertobehealthy.com/
+     python setup_bing.py YOUR_API_KEY https://www.example.com/
 
-Writes BING_API_KEY + BING_SITE_URL into .env and tests the connection.
+The site URL must match the property Bing verified (www and a trailing
+slash, if that is how Bing lists it). If you omit the URL, WP_SITE_URL
+from .env is used and printed. There is no built-in domain.
+
+Writes BING_API_KEY and BING_SITE_URL into .env and tests the connection.
 """
 from __future__ import annotations
 
@@ -53,11 +54,21 @@ def main(argv: list[str]) -> int:
         return 0 if len(argv) > 1 else 1
 
     api_key = argv[1].strip()
-    site = (
-        argv[2].strip()
-        if len(argv) > 2
-        else "https://www.eagertobehealthy.com/"
-    )
+    site = argv[2].strip() if len(argv) > 2 else ""
+    if not site:
+        import config
+
+        site = (config.WP_SITE_URL or "").strip()
+        if not site:
+            print(
+                "No site URL. Pass the URL Bing verified, for example:\n"
+                "  python setup_bing.py YOUR_API_KEY https://www.example.com/\n"
+                "Or set WP_SITE_URL in .env first. This script does not "
+                "assume a domain.",
+                file=sys.stderr,
+            )
+            return 1
+        print(f"No site URL given; using WP_SITE_URL={site}")
     if not site.endswith("/"):
         # Bing often stores verified sites with trailing slash
         site_slash = site + "/"

@@ -57,7 +57,7 @@ def _get_credentials() -> Credentials:
     if not os.path.exists(_TOKEN_FILE):
         raise FileNotFoundError(
             f"token.json not found at {_TOKEN_FILE}. Run `python authorize.py` "
-            "first (from an RDP desktop session on 5by5)."
+            "first."
         )
     creds = Credentials.from_authorized_user_file(_TOKEN_FILE, _SCOPES)
     if creds.expired and creds.refresh_token:
@@ -66,14 +66,14 @@ def _get_credentials() -> Credentials:
         except Exception as exc:
             raise GSCAuthError(
                 "Google OAuth token refresh failed (invalid_grant or revoked). "
-                "Re-run `python authorize.py` on 5by5 (RDP desktop) to recreate token.json. "
+                "Re-run `python authorize.py` to recreate token.json. "
                 f"Original error: {exc}"
             ) from exc
         config.write_private_text(_TOKEN_FILE, creds.to_json())
     if not creds.valid:
         raise GSCAuthError(
             "Google OAuth credentials are not valid. Run `python authorize.py` "
-            "on 5by5 (RDP desktop) to re-authenticate Search Console access."
+            "to re-authenticate Search Console access."
         )
     return creds
 

@@ -1,5 +1,7 @@
 # SEO Advisor — Zero-API-Cost Architecture & Refactoring Guide
 
+> Historical design notes. Install and run from [README.md](README.md). File links below point at the original machine's checkout, not at a path you need.
+
 > **Project Goal**: Maximize organic search improvements on high-upside pages, preserve the complete Rank Math metadata structure and scoring integrity, reuse existing Rank Math tools, and operate at **zero API cost** via a report-based handoff to Grok or Claude chat.
 
 ---

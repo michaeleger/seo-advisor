@@ -39,8 +39,9 @@ def _csv_env(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
 GSC_CREDENTIALS_FILE = project_path(
     os.getenv("GSC_CREDENTIALS_FILE", "client_secret.json")
 )
-GSC_SITE_URL = os.getenv("GSC_SITE_URL", "https://eagertobehealthy.com/")
-WP_SITE_URL = os.getenv("WP_SITE_URL", "https://www.eagertobehealthy.com")
+# No baked-in site. An unset variable must not fall back to a real property.
+GSC_SITE_URL = os.getenv("GSC_SITE_URL", "").strip()
+WP_SITE_URL = os.getenv("WP_SITE_URL", "").strip()
 
 # ─── Pipeline ────────────────────────────────────────────────────────────────
 # 1) Identify worst / most improvable pages (GSC + RankMath + …)
@@ -146,11 +147,10 @@ USE_KEYWORD_PLANNER = os.getenv("USE_KEYWORD_PLANNER", "1").strip().lower() in (
     "on",
 )
 
-# ─── Bing Webmaster (free complementary — on by default when key is set) ─────
+# ─── Bing Webmaster (free; runs only when key and site URL are both set) ────
 BING_API_KEY = os.getenv("BING_API_KEY", "").strip()
-BING_SITE_URL = os.getenv(
-    "BING_SITE_URL", "https://www.eagertobehealthy.com/"
-).strip()
+# Same rule as GSC_SITE_URL / WP_SITE_URL: never guess a verified property.
+BING_SITE_URL = os.getenv("BING_SITE_URL", "").strip()
 USE_BING = os.getenv("USE_BING", "1").strip().lower() in ("1", "true", "yes", "on")
 
 # ─── Page filtering — URLs that are never worth optimizing ───────────────────
