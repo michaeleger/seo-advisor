@@ -52,7 +52,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--no-cooldown",
         action="store_true",
-        help="Re-include pages even if reported within COOLDOWN_DAYS.",
+        help=(
+            "Include pages that are still inside their backoff window "
+            "(defer_until / BACKOFF_DAYS)."
+        ),
     )
     p.add_argument(
         "--limit",
@@ -239,7 +242,7 @@ def collect_worst_posts(args: argparse.Namespace) -> dict:
         page_metrics = gsc.get_page_metrics()
     except Exception as exc:
         log.error("GSC auth/API failed: %s", exc)
-        log.error("Re-authorize: python authorize.py  (from RDP desktop on 5by5)")
+        log.error("Re-authorize: python authorize.py")
         raise SystemExit(1) from exc
 
     log.info("  %d pages found in Search Console.", len(page_metrics))
@@ -414,12 +417,29 @@ def enrich_selected_pages(
     return results, pending_state
 
 
+def _require_site_urls(args: argparse.Namespace) -> None:
+    """Refuse to run against a guessed site. Site URLs have no default."""
+    if not (config.WP_SITE_URL or "").strip():
+        raise SystemExit(
+            "WP_SITE_URL is not set. Copy .env.example to .env and set it to "
+            "your WordPress origin (https://www.example.com). "
+            "This tool does not assume a default site."
+        )
+    if not args.demo and not (config.GSC_SITE_URL or "").strip():
+        raise SystemExit(
+            "GSC_SITE_URL is not set. Set it in .env to your Search Console "
+            "property (sc-domain:example.com or https://www.example.com/). "
+            "--demo does not need Search Console."
+        )
+
+
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
     apply_runtime_overrides(args)
+    _require_site_urls(args)
     db.init_db()
     os.makedirs(config.REPORTS_DIR, exist_ok=True)
 

@@ -1,5 +1,7 @@
 # seo-advisor — Claude build plan (post triple-review)
 
+> Historical notes from the original machine. Install and run from [README.md](README.md). Paths such as `~/projects/seo-advisor` and the host name `5by5` are that machine, not setup instructions.
+
 **Project:** `/home/aiuser/projects/seo-advisor` on 5by5  
 **Ops promote target (later):** `~/aiscripts/seo-advisor/` — **do not promote until Phase C**  
 **Owner workflow:** Automation leads; Claude Code implements/fixes; Grok Build judges; Antigravity for Google/API questions.

@@ -4,8 +4,7 @@ One-time OAuth for Google Ads API (Keyword Planner).
 Uses PKCE (required by modern Google OAuth). Manual code paste only works if
 we keep the code_verifier from the same auth start — this script does that.
 
-On 5by5 RDP (browser on this machine) — simplest:
-  cd ~/projects/seo-advisor && source .venv/bin/activate
+Desktop session on this machine (virtualenv already active) — simplest:
   python authorize_ads.py
 
 If browser shows "localhost refused to connect":
@@ -13,8 +12,9 @@ If browser shows "localhost refused to connect":
   2) In the SAME terminal session that printed the Google URL, paste when asked
      OR run:  python authorize_ads.py --finish 'http://localhost:4568/?code=...'
 
-Two-step (SSH without browser):
+Two-step (SSH, browser on another computer; callback port 4568):
   python authorize_ads.py --start          # prints Google URL; saves verifier
+  # ssh -L 4568:localhost:4568 user@this-host
   # open URL, copy callback
   python authorize_ads.py --finish 'CALLBACK_URL'
 """

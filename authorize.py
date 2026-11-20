@@ -1,16 +1,15 @@
 """
-One-time Google Search Console OAuth — intended to run fully on 5by5.
+One-time Google Search Console OAuth. Writes token.json in this project.
 
-Recommended (100% on this machine):
-  1. Connect with RDP to 5by5 (xRDP on port 3389) so you have a desktop.
-  2. Open a terminal on that desktop.
-  3. cd ~/projects/seo-advisor && source .venv/bin/activate
-  4. python authorize.py
-  Chrome opens on 5by5; sign in; token.json is written here.
+On a machine with a browser (virtualenv already active):
+  python authorize.py
+  Sign in with the Google account that can read the Search Console property.
+  token.json is written here (mode 0600).
 
-Optional SSH-tunnel mode (browser on your laptop):
-  ssh -L 4567:localhost:4567 aiuser@5by5
+Headless server, browser on another computer (callback port 4567):
+  ssh -L 4567:localhost:4567 user@your-server
   python authorize.py --no-browser
+  Open the printed URL in the browser on the computer that owns the tunnel.
 """
 import argparse
 import os
@@ -63,15 +62,15 @@ def main():
 
     if open_browser and not os.environ.get("DISPLAY"):
         print(
-            "WARNING: DISPLAY is not set. You are probably in a plain SSH session.\n"
-            "Google OAuth needs a browser ON 5by5 for localhost to work.\n\n"
-            "Do this instead:\n"
-            "  1. RDP into 5by5 (port 3389) as aiuser\n"
-            "  2. Open Terminal on the desktop\n"
-            "  3. cd ~/projects/seo-advisor && source .venv/bin/activate\n"
-            "  4. python authorize.py\n\n"
-            "Continuing anyway — open the printed URL in Chrome on 5by5 "
-            "(RDP desktop), not on your laptop.\n",
+            "WARNING: DISPLAY is not set, so a browser on this machine may not open.\n"
+            "Google's callback is localhost, so the browser has to reach this process.\n\n"
+            "Either:\n"
+            "  - Run `python authorize.py` in a desktop session on this machine, or\n"
+            f"  - From your computer: ssh -L {port}:localhost:{port} user@this-host\n"
+            "    then: python authorize.py --no-browser\n"
+            "    and open the printed URL in the browser on your computer.\n\n"
+            "Continuing. If a URL is printed, open it in a browser that can reach "
+            f"localhost:{port} on this machine.\n",
             file=sys.stderr,
         )
 
@@ -82,15 +81,16 @@ def main():
     if open_browser:
         print(
             f"\nStarting OAuth on this machine (localhost:{port}).\n"
-            f"Chrome should open here on 5by5 — sign in and allow access.\n"
-            f"If no window appears, open the URL printed below in a browser "
-            f"running ON 5by5 (RDP), not on your laptop.\n"
+            "A browser should open. Sign in and allow access.\n"
+            "If no window appears, open the URL printed below in a browser "
+            "on this same machine.\n"
         )
     else:
         print(
             f"\nListening on localhost:{port} (no browser).\n"
-            f"Tunnel from laptop: ssh -L {port}:localhost:{port} aiuser@5by5\n"
-            f"Then open the URL below in the laptop browser.\n"
+            "From the computer with your browser:\n"
+            f"  ssh -L {port}:localhost:{port} user@this-host\n"
+            "Then open the URL below in that browser.\n"
         )
 
     creds = flow.run_local_server(

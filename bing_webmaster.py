@@ -8,8 +8,8 @@ Official JSON API (GET, siteUrl + apikey only):
 Rows are daily; we aggregate by query/page. Data updates about weekly.
 
 Setup:
-  python setup_bing.py YOUR_API_KEY
-  # or set BING_API_KEY in .env
+  python setup_bing.py YOUR_API_KEY https://www.example.com/
+  # or set BING_API_KEY and BING_SITE_URL in .env
 """
 from __future__ import annotations
 
@@ -33,7 +33,10 @@ def is_configured() -> bool:
 def status_message() -> str:
     if is_configured():
         return f"configured ({config.BING_SITE_URL})"
-    return "not configured — run: python setup_bing.py YOUR_API_KEY"
+    return (
+        "not configured — set BING_API_KEY and BING_SITE_URL "
+        "(python setup_bing.py YOUR_API_KEY https://www.example.com/)"
+    )
 
 
 def _get(method: str, *, site_url: str | None = None) -> Any:
